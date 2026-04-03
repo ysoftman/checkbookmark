@@ -598,7 +598,11 @@ fn render_app(f: &mut Frame, app: &mut App) {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan)),
     )
-    .row_highlight_style(Style::default().bg(Color::DarkGray))
+    .row_highlight_style(
+        Style::default()
+            .bg(Color::Rgb(40, 40, 80))
+            .add_modifier(Modifier::BOLD),
+    )
     .highlight_symbol(">> ");
 
     f.render_stateful_widget(table, chunks[1], &mut app.table_state);
