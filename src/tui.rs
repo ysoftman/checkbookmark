@@ -931,12 +931,14 @@ pub async fn run_check_tui(
         {
             let mut locked = app.lock().unwrap();
             if locked.refresh_requested {
+                let fresh_entries = parse_bookmarks(&locked.bookmarks_path);
+                locked.total = fresh_entries.len();
                 locked.reset();
                 drop(locked);
                 check_handle.abort();
                 checked_count.store(0, Ordering::Relaxed);
                 check_handle = spawn_check_task(
-                    entries.clone(),
+                    fresh_entries,
                     app.clone(),
                     client.clone(),
                     checked_count.clone(),
