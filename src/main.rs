@@ -237,6 +237,8 @@ struct App {
     search_query: String,
     refresh_requested: bool,
     pending_d: bool,
+    confirm_delete: bool,
+    delete_target_url: String,
     bookmarks_path: PathBuf,
     edit_mode: bool,
     edit_field: EditField,
@@ -278,6 +280,8 @@ impl App {
             search_query: String::new(),
             refresh_requested: false,
             pending_d: false,
+            confirm_delete: false,
+            delete_target_url: String::new(),
             bookmarks_path,
             edit_mode: false,
             edit_field: EditField::Name,
@@ -368,6 +372,20 @@ impl App {
     }
 
     fn handle_key(&mut self, key: &crossterm::event::KeyEvent) -> bool {
+        // 삭제 확인 모드
+        if self.confirm_delete {
+            match key.code {
+                KeyCode::Char('y') => {
+                    self.confirm_delete = false;
+                    self.do_delete();
+                }
+                _ => {
+                    self.confirm_delete = false;
+                    self.delete_target_url.clear();
+                }
+            }
+            return false;
+        }
         if self.edit_mode {
             return self.handle_edit_key(key);
         }
@@ -380,11 +398,9 @@ impl App {
         if self.pending_d {
             self.pending_d = false;
             if key.code == KeyCode::Char('d') && !ctrl {
-                self.delete_selected();
+                self.confirm_delete_selected();
                 return false;
             }
-            // d 이후 다른 키 → 무시하고 해당 키를 정상 처리하지 않음
-            // Ctrl+d는 page down이므로 별도 처리
             if ctrl && key.code == KeyCode::Char('d') {
                 self.page_down();
                 return false;
@@ -393,12 +409,11 @@ impl App {
         }
 
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => {
+            KeyCode::Char('q') => return true,
+            KeyCode::Esc => {
                 if !self.search_query.is_empty() {
                     self.search_query.clear();
                     self.table_state.select(Some(0));
-                } else {
-                    return true;
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => self.scroll_up(),
@@ -512,21 +527,27 @@ impl App {
         let _ = update_bookmarks_file(&self.bookmarks_path, &original_url, &new_name, &new_url);
     }
 
-    fn delete_selected(&mut self) {
+    fn confirm_delete_selected(&mut self) {
         let idx = match self.table_state.selected() {
             Some(i) => i,
             None => return,
         };
         let results = self.sorted_results();
-        let url = match results.get(idx) {
-            Some(r) => r.url.clone(),
-            None => return,
-        };
+        if let Some(r) = results.get(idx) {
+            self.delete_target_url = r.url.clone();
+            self.confirm_delete = true;
+        }
+    }
 
-        // Bookmarks JSON에서 삭제
+    fn do_delete(&mut self) {
+        let url = std::mem::take(&mut self.delete_target_url);
+        if url.is_empty() {
+            return;
+        }
+        let idx = self.table_state.selected().unwrap_or(0);
+
         let _ = delete_bookmark_from_file(&self.bookmarks_path, &url);
 
-        // results에서 제거
         self.results.retain(|r| r.url != url);
         self.total = self.total.saturating_sub(1);
         if self.total > 0 {
@@ -756,7 +777,7 @@ fn run_profile_selector(profiles: &[ProfileInfo]) -> io::Result<Option<usize>> {
                     continue;
                 }
                 match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => break None,
+                    KeyCode::Char('q') => break None,
                     KeyCode::Up | KeyCode::Char('k') => {
                         selected = selected.saturating_sub(1);
                     }
@@ -813,7 +834,7 @@ fn render_app(f: &mut Frame, app: &mut App) {
     };
 
     let progress_ratio = if app.total > 0 {
-        app.checked as f64 / app.total as f64
+        (app.checked as f64 / app.total as f64).min(1.0)
     } else {
         1.0
     };
@@ -933,6 +954,31 @@ fn render_app(f: &mut Frame, app: &mut App) {
         let hint = Paragraph::new(" [Tab] Switch field  [Enter] Save  [Esc] Cancel")
             .style(Style::default().fg(Color::DarkGray));
         f.render_widget(hint, edit_chunks[2]);
+    }
+
+    // 삭제 확인 팝업
+    if app.confirm_delete {
+        let popup_area = centered_rect(50, 5, area);
+        f.render_widget(Clear, popup_area);
+
+        let confirm_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Length(2)])
+            .split(popup_area);
+
+        let msg = Paragraph::new(format!(" Delete: {}", app.delete_target_url))
+            .style(Style::default().fg(Color::Red))
+            .block(
+                Block::default()
+                    .title(" Confirm Delete ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Red)),
+            );
+        f.render_widget(msg, confirm_chunks[0]);
+
+        let hint = Paragraph::new(" [y] Yes  [any other key] Cancel")
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(hint, confirm_chunks[1]);
     }
 
     // 하단: 검색 모드 또는 도움말
