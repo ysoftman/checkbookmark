@@ -502,22 +502,31 @@ fn render_app(f: &mut Frame, app: &mut App) {
         "Concurrency: {}  Timeout: {}s",
         app.concurrency, app.timeout
     );
-    let header_text = if app.checking_done {
+    let header_spans: Vec<Span> = if app.checking_done {
         let valid = app.total - app.invalid;
         let sort_status = if app.sort_by_status {
             "  [Sort: Status]"
         } else {
             ""
         };
-        format!(
-            " Profile: {}  |  Total: {}  Valid: {}  Invalid: {}  |  {}{}",
-            app.profile_name, app.total, valid, app.invalid, settings, sort_status
-        )
+        vec![
+            Span::raw(format!(
+                " Profile: {}  |  Total: {}  ",
+                app.profile_name, app.total
+            )),
+            Span::styled(format!("Valid: {valid}"), Style::default().fg(Color::Green)),
+            Span::raw("  "),
+            Span::styled(
+                format!("Invalid: {}", app.invalid),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(format!("  |  {settings}{sort_status}")),
+        ]
     } else {
-        format!(
+        vec![Span::raw(format!(
             " Profile: {}  |  Checking: {}/{}  |  {}",
             app.profile_name, app.checked, app.total, settings
-        )
+        ))]
     };
 
     let progress_ratio = if app.total > 0 {
@@ -529,7 +538,7 @@ fn render_app(f: &mut Frame, app: &mut App) {
     let gauge = Gauge::default()
         .block(
             Block::default()
-                .title(header_text)
+                .title(Line::from(header_spans))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Cyan)),
         )
@@ -554,7 +563,7 @@ fn render_app(f: &mut Frame, app: &mut App) {
             let status_style = if r.is_valid {
                 Style::default().fg(Color::Green)
             } else {
-                Style::default().fg(Color::Red)
+                Style::default().fg(Color::Yellow)
             };
             Row::new(vec![
                 Cell::from(format!("{}", i + 1)),
