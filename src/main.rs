@@ -236,10 +236,29 @@ struct App {
     search_mode: bool,
     search_query: String,
     refresh_requested: bool,
+    pending_d: bool,
+    bookmarks_path: PathBuf,
+    edit_mode: bool,
+    edit_field: EditField,
+    edit_name: String,
+    edit_url: String,
+    edit_original_url: String,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum EditField {
+    Name,
+    Url,
 }
 
 impl App {
-    fn new(profile_name: String, total: usize, concurrency: usize, timeout: u64) -> Self {
+    fn new(
+        profile_name: String,
+        total: usize,
+        concurrency: usize,
+        timeout: u64,
+        bookmarks_path: PathBuf,
+    ) -> Self {
         let mut table_state = TableState::default();
         if total > 0 {
             table_state.select(Some(0));
@@ -258,6 +277,13 @@ impl App {
             search_mode: false,
             search_query: String::new(),
             refresh_requested: false,
+            pending_d: false,
+            bookmarks_path,
+            edit_mode: false,
+            edit_field: EditField::Name,
+            edit_name: String::new(),
+            edit_url: String::new(),
+            edit_original_url: String::new(),
         }
     }
 
@@ -342,10 +368,30 @@ impl App {
     }
 
     fn handle_key(&mut self, key: &crossterm::event::KeyEvent) -> bool {
+        if self.edit_mode {
+            return self.handle_edit_key(key);
+        }
         if self.search_mode {
             return self.handle_search_key(key);
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+        // dd 시퀀스 처리
+        if self.pending_d {
+            self.pending_d = false;
+            if key.code == KeyCode::Char('d') && !ctrl {
+                self.delete_selected();
+                return false;
+            }
+            // d 이후 다른 키 → 무시하고 해당 키를 정상 처리하지 않음
+            // Ctrl+d는 page down이므로 별도 처리
+            if ctrl && key.code == KeyCode::Char('d') {
+                self.page_down();
+                return false;
+            }
+            return false;
+        }
+
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => {
                 if !self.search_query.is_empty() {
@@ -361,10 +407,12 @@ impl App {
             KeyCode::PageUp => self.page_up(),
             KeyCode::Char('d') if ctrl => self.page_down(),
             KeyCode::Char('u') if ctrl => self.page_up(),
+            KeyCode::Char('d') => self.pending_d = true,
             KeyCode::Char('g') => self.go_top(),
             KeyCode::Char('G') => self.go_bottom(),
             KeyCode::Char('s') => self.toggle_sort_by_status(),
             KeyCode::Char('o') => self.open_selected_url(),
+            KeyCode::Char('e') => self.enter_edit_mode(),
             KeyCode::Char('/') => {
                 self.search_mode = true;
                 self.search_query.clear();
@@ -399,6 +447,98 @@ impl App {
         false
     }
 
+    fn handle_edit_key(&mut self, key: &crossterm::event::KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc => {
+                self.edit_mode = false;
+            }
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.edit_field = match self.edit_field {
+                    EditField::Name => EditField::Url,
+                    EditField::Url => EditField::Name,
+                };
+            }
+            KeyCode::Enter => {
+                self.save_edit();
+                self.edit_mode = false;
+            }
+            KeyCode::Backspace => {
+                let buf = match self.edit_field {
+                    EditField::Name => &mut self.edit_name,
+                    EditField::Url => &mut self.edit_url,
+                };
+                buf.pop();
+            }
+            KeyCode::Char(c) => {
+                let buf = match self.edit_field {
+                    EditField::Name => &mut self.edit_name,
+                    EditField::Url => &mut self.edit_url,
+                };
+                buf.push(c);
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn enter_edit_mode(&mut self) {
+        let idx = match self.table_state.selected() {
+            Some(i) => i,
+            None => return,
+        };
+        let results = self.sorted_results();
+        let entry = results.get(idx).map(|r| (r.name.clone(), r.url.clone()));
+        if let Some((name, url)) = entry {
+            self.edit_name = name;
+            self.edit_url = url.clone();
+            self.edit_original_url = url;
+            self.edit_field = EditField::Name;
+            self.edit_mode = true;
+        }
+    }
+
+    fn save_edit(&mut self) {
+        let original_url = self.edit_original_url.clone();
+        let new_name = self.edit_name.clone();
+        let new_url = self.edit_url.clone();
+
+        // results에서 해당 항목 업데이트
+        if let Some(r) = self.results.iter_mut().find(|r| r.url == original_url) {
+            r.name = new_name.clone();
+            r.url = new_url.clone();
+        }
+
+        // Bookmarks JSON 파일 업데이트
+        let _ = update_bookmarks_file(&self.bookmarks_path, &original_url, &new_name, &new_url);
+    }
+
+    fn delete_selected(&mut self) {
+        let idx = match self.table_state.selected() {
+            Some(i) => i,
+            None => return,
+        };
+        let results = self.sorted_results();
+        let url = match results.get(idx) {
+            Some(r) => r.url.clone(),
+            None => return,
+        };
+
+        // Bookmarks JSON에서 삭제
+        let _ = delete_bookmark_from_file(&self.bookmarks_path, &url);
+
+        // results에서 제거
+        self.results.retain(|r| r.url != url);
+        self.total = self.total.saturating_sub(1);
+        if self.total > 0 {
+            let len = self.row_count();
+            if idx >= len && len > 0 {
+                self.table_state.select(Some(len - 1));
+            }
+        } else {
+            self.table_state.select(None);
+        }
+    }
+
     fn request_refresh(&mut self) {
         self.refresh_requested = true;
     }
@@ -426,6 +566,105 @@ impl App {
             let _ = open_url(&url);
         }
     }
+}
+
+/// 중앙 팝업 영역 계산
+fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
+    let popup_width = area.width * percent_x / 100;
+    let x = (area.width.saturating_sub(popup_width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    Rect::new(x, y, popup_width, height)
+}
+
+/// Bookmarks JSON 파일에서 URL로 항목을 찾아 name/url 업데이트
+fn update_bookmarks_file(
+    path: &PathBuf,
+    original_url: &str,
+    new_name: &str,
+    new_url: &str,
+) -> io::Result<()> {
+    let content = std::fs::read_to_string(path)?;
+    let mut value: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    fn update_node(
+        node: &mut serde_json::Value,
+        original_url: &str,
+        new_name: &str,
+        new_url: &str,
+    ) -> bool {
+        if node.get("type").and_then(|t| t.as_str()) == Some("url")
+            && node.get("url").and_then(|u| u.as_str()) == Some(original_url)
+        {
+            node["name"] = serde_json::Value::String(new_name.to_string());
+            node["url"] = serde_json::Value::String(new_url.to_string());
+            return true;
+        }
+        if let Some(children) = node.get_mut("children").and_then(|c| c.as_array_mut()) {
+            for child in children {
+                if update_node(child, original_url, new_name, new_url) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    if let Some(roots) = value.get_mut("roots") {
+        for key in &["bookmark_bar", "other", "synced"] {
+            if let Some(root) = roots.get_mut(*key) {
+                if update_node(root, original_url, new_name, new_url) {
+                    break;
+                }
+            }
+        }
+    }
+
+    let output = serde_json::to_string_pretty(&value)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    std::fs::write(path, output)?;
+    Ok(())
+}
+
+/// Bookmarks JSON 파일에서 URL로 항목을 찾아 삭제
+fn delete_bookmark_from_file(path: &PathBuf, target_url: &str) -> io::Result<()> {
+    let content = std::fs::read_to_string(path)?;
+    let mut value: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    fn remove_node(node: &mut serde_json::Value, target_url: &str) -> bool {
+        if let Some(children) = node.get_mut("children").and_then(|c| c.as_array_mut()) {
+            let before = children.len();
+            children.retain(|child| {
+                !(child.get("type").and_then(|t| t.as_str()) == Some("url")
+                    && child.get("url").and_then(|u| u.as_str()) == Some(target_url))
+            });
+            if children.len() < before {
+                return true;
+            }
+            for child in children {
+                if remove_node(child, target_url) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    if let Some(roots) = value.get_mut("roots") {
+        for key in &["bookmark_bar", "other", "synced"] {
+            if let Some(root) = roots.get_mut(*key) {
+                if remove_node(root, target_url) {
+                    break;
+                }
+            }
+        }
+    }
+
+    let output = serde_json::to_string_pretty(&value)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    std::fs::write(path, output)?;
+    Ok(())
 }
 
 /// OS별 기본 브라우저로 URL 열기
@@ -647,6 +886,55 @@ fn render_app(f: &mut Frame, app: &mut App) {
 
     f.render_stateful_widget(table, chunks[1], &mut app.table_state);
 
+    // 편집 모드: 중앙에 팝업
+    if app.edit_mode {
+        let popup_area = centered_rect(60, 7, area);
+        f.render_widget(Clear, popup_area);
+
+        let edit_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Length(1),
+            ])
+            .split(popup_area);
+
+        let name_style = if app.edit_field == EditField::Name {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let name_input = Paragraph::new(app.edit_name.as_str())
+            .style(name_style)
+            .block(
+                Block::default()
+                    .title(" Name ")
+                    .borders(Borders::ALL)
+                    .border_style(name_style),
+            );
+        f.render_widget(name_input, edit_chunks[0]);
+
+        let url_style = if app.edit_field == EditField::Url {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let url_input = Paragraph::new(app.edit_url.as_str())
+            .style(url_style)
+            .block(
+                Block::default()
+                    .title(" URL ")
+                    .borders(Borders::ALL)
+                    .border_style(url_style),
+            );
+        f.render_widget(url_input, edit_chunks[1]);
+
+        let hint = Paragraph::new(" [Tab] Switch field  [Enter] Save  [Esc] Cancel")
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(hint, edit_chunks[2]);
+    }
+
     // 하단: 검색 모드 또는 도움말
     if app.search_mode {
         let filtered_count = app.sorted_results().len();
@@ -675,7 +963,7 @@ fn render_app(f: &mut Frame, app: &mut App) {
             String::new()
         };
         let help_text = format!(
-            " [↑/↓/j/k] Navigate  [PgUp/PgDn/C-u/C-d] Page  [g/G] Top/Bottom  [s] Sort  [o] Open  [/] Filter  [r] Refresh  [q] Quit{search_info}"
+            " [↑/↓/j/k] Navigate  [PgUp/PgDn/C-u/C-d] Page  [g/G] Top/Bottom  [s] Sort  [o] Open  [e] Edit  [dd] Delete  [/] Filter  [r] Refresh  [q] Quit{search_info}"
         );
         let help = Paragraph::new(help_text)
             .style(Style::default().fg(Color::DarkGray))
@@ -878,6 +1166,7 @@ async fn main() {
             total,
             cli.concurrency,
             cli.timeout,
+            path.clone(),
         )));
         if run_check_tui(app, entries, client.clone(), cli.concurrency)
             .await
