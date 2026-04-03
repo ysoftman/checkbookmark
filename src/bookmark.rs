@@ -286,6 +286,136 @@ pub fn delete_bookmark_from_file(path: &PathBuf, target_url: &str) -> io::Result
     Ok(())
 }
 
+/// Bookmarks JSON에서 URL 항목을 다른 폴더로 이동
+pub fn move_bookmark_to_folder(
+    path: &PathBuf,
+    target_url: &str,
+    new_folder: &str,
+) -> io::Result<()> {
+    let content = std::fs::read_to_string(path)?;
+    let mut value: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    // 1단계: 대상 노드를 찾아서 제거하고 복사본 보관
+    fn remove_and_capture(
+        node: &mut serde_json::Value,
+        target_url: &str,
+    ) -> Option<serde_json::Value> {
+        if let Some(children) = node.get_mut("children").and_then(|c| c.as_array_mut()) {
+            let pos = children.iter().position(|child| {
+                child.get("type").and_then(|t| t.as_str()) == Some("url")
+                    && child.get("url").and_then(|u| u.as_str()) == Some(target_url)
+            });
+            if let Some(idx) = pos {
+                return Some(children.remove(idx));
+            }
+            for child in children.iter_mut() {
+                if let Some(captured) = remove_and_capture(child, target_url) {
+                    return Some(captured);
+                }
+            }
+        }
+        None
+    }
+
+    // 2단계: 폴더 경로로 대상 폴더 노드를 찾거나 생성
+    fn find_or_create_folder<'a>(
+        node: &'a mut serde_json::Value,
+        folder_parts: &[&str],
+    ) -> &'a mut serde_json::Value {
+        if folder_parts.is_empty() {
+            return node;
+        }
+        let target_name = folder_parts[0];
+        let rest = &folder_parts[1..];
+
+        let children = node
+            .get_mut("children")
+            .and_then(|c| c.as_array_mut())
+            .expect("folder node must have children");
+
+        // 이름이 일치하는 폴더 찾기
+        let pos = children.iter().position(|child| {
+            child.get("type").and_then(|t| t.as_str()) == Some("folder")
+                && child.get("name").and_then(|n| n.as_str()) == Some(target_name)
+        });
+
+        let idx = if let Some(i) = pos {
+            i
+        } else {
+            // 폴더가 없으면 새로 생성
+            let new_folder = serde_json::json!({
+                "children": [],
+                "name": target_name,
+                "type": "folder"
+            });
+            children.push(new_folder);
+            children.len() - 1
+        };
+
+        find_or_create_folder(&mut children[idx], rest)
+    }
+
+    // 루트에서 대상 노드 제거
+    let mut captured = None;
+    if let Some(roots) = value.get_mut("roots") {
+        for key in &["bookmark_bar", "other", "synced"] {
+            if let Some(root) = roots.get_mut(*key) {
+                captured = remove_and_capture(root, target_url);
+                if captured.is_some() {
+                    break;
+                }
+            }
+        }
+    }
+
+    let Some(bookmark_node) = captured else {
+        return Ok(());
+    };
+
+    // 새 폴더 경로 파싱: "root_name/sub1/sub2" → root_name에서 시작
+    let parts: Vec<&str> = new_folder.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.is_empty() {
+        return Ok(());
+    }
+
+    // 첫 번째 파트가 루트 키인지 확인
+    let root_keys = ["bookmark_bar", "other", "synced"];
+    if let Some(roots) = value.get_mut("roots") {
+        let (root_node, remaining) = if root_keys.contains(&parts[0]) {
+            (roots.get_mut(parts[0]).unwrap(), &parts[1..])
+        } else {
+            // 루트 키가 아니면 루트 이름으로 매칭 시도
+            let found = root_keys.iter().find(|&&key| {
+                roots
+                    .get(key)
+                    .and_then(|r| r.get("name"))
+                    .and_then(|n| n.as_str())
+                    == Some(parts[0])
+            });
+            if let Some(&key) = found {
+                (roots.get_mut(key).unwrap(), &parts[1..])
+            } else {
+                // 기본적으로 bookmark_bar에 넣기
+                (roots.get_mut("bookmark_bar").unwrap(), &parts[..])
+            }
+        };
+
+        let target_folder = find_or_create_folder(root_node, remaining);
+        if let Some(children) = target_folder
+            .get_mut("children")
+            .and_then(|c| c.as_array_mut())
+        {
+            children.push(bookmark_node);
+        }
+    }
+
+    let output = serde_json::to_string_pretty(&value)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    std::fs::write(path, output)?;
+    Ok(())
+}
+
 /// OS별 기본 브라우저로 URL 열기
 pub fn open_url(url: &str) -> io::Result<()> {
     if cfg!(target_os = "macos") {

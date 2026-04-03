@@ -39,10 +39,12 @@ pub struct App {
     pub bookmarks_path: PathBuf,
     pub edit_mode: bool,
     pub edit_field: EditField,
+    pub edit_folder: String,
     pub edit_name: String,
     pub edit_url: String,
     pub edit_cursor: usize,
     pub edit_original_url: String,
+    pub edit_original_folder: String,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -56,6 +58,7 @@ pub enum SortMode {
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum EditField {
+    Folder,
     Name,
     Url,
 }
@@ -92,11 +95,13 @@ impl App {
             delete_target_url: String::new(),
             bookmarks_path,
             edit_mode: false,
-            edit_field: EditField::Name,
+            edit_field: EditField::Folder,
+            edit_folder: String::new(),
             edit_name: String::new(),
             edit_url: String::new(),
             edit_cursor: 0,
             edit_original_url: String::new(),
+            edit_original_folder: String::new(),
         }
     }
 
@@ -307,6 +312,7 @@ impl App {
 
     fn edit_buf(&self) -> &str {
         match self.edit_field {
+            EditField::Folder => &self.edit_folder,
             EditField::Name => &self.edit_name,
             EditField::Url => &self.edit_url,
         }
@@ -314,6 +320,7 @@ impl App {
 
     fn edit_buf_mut(&mut self) -> &mut String {
         match self.edit_field {
+            EditField::Folder => &mut self.edit_folder,
             EditField::Name => &mut self.edit_name,
             EditField::Url => &mut self.edit_url,
         }
@@ -333,9 +340,17 @@ impl App {
             KeyCode::Esc => {
                 self.edit_mode = false;
             }
-            KeyCode::Tab | KeyCode::BackTab => {
+            KeyCode::Tab => {
                 self.edit_field = match self.edit_field {
+                    EditField::Folder => EditField::Name,
                     EditField::Name => EditField::Url,
+                    EditField::Url => EditField::Folder,
+                };
+            }
+            KeyCode::BackTab => {
+                self.edit_field = match self.edit_field {
+                    EditField::Folder => EditField::Url,
+                    EditField::Name => EditField::Folder,
                     EditField::Url => EditField::Name,
                 };
                 let len = self.edit_buf().chars().count();
@@ -402,28 +417,39 @@ impl App {
             None => return,
         };
         let results = self.sorted_results();
-        let entry = results.get(idx).map(|r| (r.name.clone(), r.url.clone()));
-        if let Some((name, url)) = entry {
-            self.edit_cursor = name.chars().count();
+        let entry = results
+            .get(idx)
+            .map(|r| (r.folder.clone(), r.name.clone(), r.url.clone()));
+        if let Some((folder, name, url)) = entry {
+            self.edit_cursor = folder.chars().count();
+            self.edit_folder = folder;
             self.edit_name = name;
             self.edit_url = url.clone();
             self.edit_original_url = url;
-            self.edit_field = EditField::Name;
+            self.edit_original_folder = self.edit_folder.clone();
+            self.edit_field = EditField::Folder;
             self.edit_mode = true;
         }
     }
 
     fn save_edit(&mut self) {
         let original_url = self.edit_original_url.clone();
+        let original_folder = self.edit_original_folder.clone();
+        let new_folder = self.edit_folder.clone();
         let new_name = self.edit_name.clone();
         let new_url = self.edit_url.clone();
 
         if let Some(r) = self.results.iter_mut().find(|r| r.url == original_url) {
+            r.folder = new_folder.clone();
             r.name = new_name.clone();
             r.url = new_url.clone();
         }
 
         let _ = update_bookmarks_file(&self.bookmarks_path, &original_url, &new_name, &new_url);
+
+        if original_folder != new_folder {
+            let _ = move_bookmark_to_folder(&self.bookmarks_path, &new_url, &new_folder);
+        }
     }
 
     fn confirm_delete_selected(&mut self) {
@@ -740,7 +766,7 @@ fn render_app(f: &mut Frame, app: &mut App) {
 
     // 편집 모드: 중앙에 팝업
     if app.edit_mode {
-        let popup_area = centered_rect(60, 7, area);
+        let popup_area = centered_rect(60, 10, area);
         f.render_widget(Clear, popup_area);
 
         let edit_chunks = Layout::default()
@@ -748,9 +774,25 @@ fn render_app(f: &mut Frame, app: &mut App) {
             .constraints([
                 Constraint::Length(3),
                 Constraint::Length(3),
+                Constraint::Length(3),
                 Constraint::Length(1),
             ])
             .split(popup_area);
+
+        let folder_style = if app.edit_field == EditField::Folder {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let folder_input = Paragraph::new(app.edit_folder.as_str())
+            .style(folder_style)
+            .block(
+                Block::default()
+                    .title(" Folder ")
+                    .borders(Borders::ALL)
+                    .border_style(folder_style),
+            );
+        f.render_widget(folder_input, edit_chunks[0]);
 
         let name_style = if app.edit_field == EditField::Name {
             Style::default().fg(Color::Yellow)
@@ -765,7 +807,7 @@ fn render_app(f: &mut Frame, app: &mut App) {
                     .borders(Borders::ALL)
                     .border_style(name_style),
             );
-        f.render_widget(name_input, edit_chunks[0]);
+        f.render_widget(name_input, edit_chunks[1]);
 
         let url_style = if app.edit_field == EditField::Url {
             Style::default().fg(Color::Yellow)
@@ -780,16 +822,17 @@ fn render_app(f: &mut Frame, app: &mut App) {
                     .borders(Borders::ALL)
                     .border_style(url_style),
             );
-        f.render_widget(url_input, edit_chunks[1]);
+        f.render_widget(url_input, edit_chunks[2]);
 
         let hint = Paragraph::new(" [Tab] Switch field  [Enter] Save  [Esc] Cancel")
             .style(Style::default().fg(Color::DarkGray));
-        f.render_widget(hint, edit_chunks[2]);
+        f.render_widget(hint, edit_chunks[3]);
 
         // 활성 필드에 커서 표시
         let (cursor_area, buf) = match app.edit_field {
-            EditField::Name => (edit_chunks[0], app.edit_name.as_str()),
-            EditField::Url => (edit_chunks[1], app.edit_url.as_str()),
+            EditField::Folder => (edit_chunks[0], app.edit_folder.as_str()),
+            EditField::Name => (edit_chunks[1], app.edit_name.as_str()),
+            EditField::Url => (edit_chunks[2], app.edit_url.as_str()),
         };
         // 커서 위치까지의 표시 너비를 계산
         let prefix: String = buf.chars().take(app.edit_cursor).collect();
