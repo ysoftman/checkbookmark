@@ -19,7 +19,7 @@ struct Cli {
     file: Option<PathBuf>,
 
     /// 동시 요청 수
-    #[arg(short, long, default_value_t = 10)]
+    #[arg(short, long, default_value_t = 100)]
     concurrency: usize,
 
     /// 요청 타임아웃(초)
