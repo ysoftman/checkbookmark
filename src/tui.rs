@@ -13,6 +13,7 @@ use crossterm::terminal::{
 use futures::stream::{self, StreamExt};
 use ratatui::prelude::*;
 use ratatui::widgets::*;
+use unicode_width::UnicodeWidthStr;
 
 use crate::bookmark::*;
 
@@ -726,11 +727,17 @@ fn render_app(f: &mut Frame, app: &mut App) {
         f.render_widget(hint, edit_chunks[2]);
 
         // 활성 필드에 커서 표시
-        let (cursor_area, text_len) = match app.edit_field {
-            EditField::Name => (edit_chunks[0], app.edit_name.len() as u16),
-            EditField::Url => (edit_chunks[1], app.edit_url.len() as u16),
+        let (cursor_area, text_width) = match app.edit_field {
+            EditField::Name => (
+                edit_chunks[0],
+                UnicodeWidthStr::width(app.edit_name.as_str()) as u16,
+            ),
+            EditField::Url => (
+                edit_chunks[1],
+                UnicodeWidthStr::width(app.edit_url.as_str()) as u16,
+            ),
         };
-        let cursor_x = cursor_area.x + 1 + text_len;
+        let cursor_x = cursor_area.x + 1 + text_width;
         let cursor_y = cursor_area.y + 1;
         f.set_cursor_position((cursor_x, cursor_y));
     }
