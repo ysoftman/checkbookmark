@@ -824,8 +824,16 @@ fn render_app(f: &mut Frame, app: &mut App) {
             );
         f.render_widget(url_input, edit_chunks[2]);
 
-        let hint = Paragraph::new(" [Tab] Switch field  [Enter] Save  [Esc] Cancel")
-            .style(Style::default().fg(Color::DarkGray));
+        let hint = Paragraph::new(Line::from(vec![
+            Span::styled(
+                " [Tab] Switch field  [Enter] Save  [Esc] Cancel  ",
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                "⚠ Close Chrome before editing to prevent sync overwrite",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+        ]));
         f.render_widget(hint, edit_chunks[3]);
 
         // 활성 필드에 커서 표시
@@ -861,8 +869,16 @@ fn render_app(f: &mut Frame, app: &mut App) {
             );
         f.render_widget(msg, confirm_chunks[0]);
 
-        let hint = Paragraph::new(" [y] Yes  [any other key] Cancel")
-            .style(Style::default().fg(Color::DarkGray));
+        let hint = Paragraph::new(Line::from(vec![
+            Span::styled(
+                " [y] Yes  [any other key] Cancel  ",
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                "⚠ Close Chrome before deleting to prevent sync overwrite",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+        ]));
         f.render_widget(hint, confirm_chunks[1]);
     }
 
