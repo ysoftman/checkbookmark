@@ -1,0 +1,850 @@
+use std::io;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::execute;
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
+use futures::stream::{self, StreamExt};
+use ratatui::prelude::*;
+use ratatui::widgets::*;
+
+use crate::bookmark::*;
+
+/// TUI 앱 상태
+pub struct App {
+    pub profile_name: String,
+    pub results: Vec<CheckResult>,
+    pub total: usize,
+    pub checked: usize,
+    pub invalid: usize,
+    pub table_state: TableState,
+    pub checking_done: bool,
+    pub sort_by_status: bool,
+    pub concurrency: usize,
+    pub timeout: u64,
+    pub search_mode: bool,
+    pub search_query: String,
+    pub refresh_requested: bool,
+    pub pending_d: bool,
+    pub confirm_delete: bool,
+    pub delete_target_url: String,
+    pub bookmarks_path: PathBuf,
+    pub edit_mode: bool,
+    pub edit_field: EditField,
+    pub edit_name: String,
+    pub edit_url: String,
+    pub edit_original_url: String,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum EditField {
+    Name,
+    Url,
+}
+
+impl App {
+    pub fn new(
+        profile_name: String,
+        total: usize,
+        concurrency: usize,
+        timeout: u64,
+        bookmarks_path: PathBuf,
+    ) -> Self {
+        let mut table_state = TableState::default();
+        if total > 0 {
+            table_state.select(Some(0));
+        }
+        Self {
+            profile_name,
+            results: Vec::new(),
+            total,
+            checked: 0,
+            invalid: 0,
+            table_state,
+            checking_done: false,
+            sort_by_status: false,
+            concurrency,
+            timeout,
+            search_mode: false,
+            search_query: String::new(),
+            refresh_requested: false,
+            pending_d: false,
+            confirm_delete: false,
+            delete_target_url: String::new(),
+            bookmarks_path,
+            edit_mode: false,
+            edit_field: EditField::Name,
+            edit_name: String::new(),
+            edit_url: String::new(),
+            edit_original_url: String::new(),
+        }
+    }
+
+    pub fn sorted_results(&self) -> Vec<&CheckResult> {
+        let query = self.search_query.to_lowercase();
+        let mut results: Vec<&CheckResult> = if query.is_empty() {
+            self.results.iter().collect()
+        } else {
+            self.results
+                .iter()
+                .filter(|r| {
+                    r.name.to_lowercase().contains(&query)
+                        || r.url.to_lowercase().contains(&query)
+                        || r.status.to_lowercase().contains(&query)
+                })
+                .collect()
+        };
+        if self.sort_by_status {
+            results.sort_by(|a, b| a.is_valid.cmp(&b.is_valid).then(a.status.cmp(&b.status)));
+        }
+        results
+    }
+
+    fn toggle_sort_by_status(&mut self) {
+        self.sort_by_status = !self.sort_by_status;
+        self.table_state.select(Some(0));
+    }
+
+    fn row_count(&self) -> usize {
+        self.sorted_results().len()
+    }
+
+    fn scroll_down(&mut self) {
+        let len = self.row_count();
+        if len == 0 {
+            return;
+        }
+        let i = match self.table_state.selected() {
+            Some(i) => (i + 1).min(len - 1),
+            None => 0,
+        };
+        self.table_state.select(Some(i));
+    }
+
+    fn scroll_up(&mut self) {
+        let i = match self.table_state.selected() {
+            Some(i) => i.saturating_sub(1),
+            None => 0,
+        };
+        self.table_state.select(Some(i));
+    }
+
+    fn page_down(&mut self) {
+        let len = self.row_count();
+        if len == 0 {
+            return;
+        }
+        let i = match self.table_state.selected() {
+            Some(i) => (i + 20).min(len - 1),
+            None => 0,
+        };
+        self.table_state.select(Some(i));
+    }
+
+    fn page_up(&mut self) {
+        let i = match self.table_state.selected() {
+            Some(i) => i.saturating_sub(20),
+            None => 0,
+        };
+        self.table_state.select(Some(i));
+    }
+
+    fn go_top(&mut self) {
+        self.table_state.select(Some(0));
+    }
+
+    fn go_bottom(&mut self) {
+        let len = self.row_count();
+        if len > 0 {
+            self.table_state.select(Some(len - 1));
+        }
+    }
+
+    pub fn handle_key(&mut self, key: &crossterm::event::KeyEvent) -> bool {
+        // 삭제 확인 모드
+        if self.confirm_delete {
+            match key.code {
+                KeyCode::Char('y') => {
+                    self.confirm_delete = false;
+                    self.do_delete();
+                }
+                _ => {
+                    self.confirm_delete = false;
+                    self.delete_target_url.clear();
+                }
+            }
+            return false;
+        }
+        if self.edit_mode {
+            return self.handle_edit_key(key);
+        }
+        if self.search_mode {
+            return self.handle_search_key(key);
+        }
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+        // dd 시퀀스 처리
+        if self.pending_d {
+            self.pending_d = false;
+            if key.code == KeyCode::Char('d') && !ctrl {
+                self.confirm_delete_selected();
+                return false;
+            }
+            if ctrl && key.code == KeyCode::Char('d') {
+                self.page_down();
+                return false;
+            }
+            return false;
+        }
+
+        match key.code {
+            KeyCode::Char('q') => return true,
+            KeyCode::Esc => {
+                if !self.search_query.is_empty() {
+                    self.search_query.clear();
+                    self.table_state.select(Some(0));
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => self.scroll_up(),
+            KeyCode::Down | KeyCode::Char('j') => self.scroll_down(),
+            KeyCode::PageDown => self.page_down(),
+            KeyCode::PageUp => self.page_up(),
+            KeyCode::Char('d') if ctrl => self.page_down(),
+            KeyCode::Char('u') if ctrl => self.page_up(),
+            KeyCode::Char('d') => self.pending_d = true,
+            KeyCode::Char('g') => self.go_top(),
+            KeyCode::Char('G') => self.go_bottom(),
+            KeyCode::Char('s') => self.toggle_sort_by_status(),
+            KeyCode::Char('o') => self.open_selected_url(),
+            KeyCode::Char('e') => self.enter_edit_mode(),
+            KeyCode::Char('/') => {
+                self.search_mode = true;
+                self.search_query.clear();
+            }
+            KeyCode::Char('r') => self.request_refresh(),
+            _ => {}
+        }
+        false
+    }
+
+    fn handle_search_key(&mut self, key: &crossterm::event::KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc => {
+                self.search_mode = false;
+                self.search_query.clear();
+                self.table_state.select(Some(0));
+            }
+            KeyCode::Enter => {
+                self.search_mode = false;
+                self.table_state.select(Some(0));
+            }
+            KeyCode::Backspace => {
+                self.search_query.pop();
+                self.table_state.select(Some(0));
+            }
+            KeyCode::Char(c) => {
+                self.search_query.push(c);
+                self.table_state.select(Some(0));
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn handle_edit_key(&mut self, key: &crossterm::event::KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc => {
+                self.edit_mode = false;
+            }
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.edit_field = match self.edit_field {
+                    EditField::Name => EditField::Url,
+                    EditField::Url => EditField::Name,
+                };
+            }
+            KeyCode::Enter => {
+                self.save_edit();
+                self.edit_mode = false;
+            }
+            KeyCode::Backspace => {
+                let buf = match self.edit_field {
+                    EditField::Name => &mut self.edit_name,
+                    EditField::Url => &mut self.edit_url,
+                };
+                buf.pop();
+            }
+            KeyCode::Char(c) => {
+                let buf = match self.edit_field {
+                    EditField::Name => &mut self.edit_name,
+                    EditField::Url => &mut self.edit_url,
+                };
+                buf.push(c);
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn enter_edit_mode(&mut self) {
+        let idx = match self.table_state.selected() {
+            Some(i) => i,
+            None => return,
+        };
+        let results = self.sorted_results();
+        let entry = results.get(idx).map(|r| (r.name.clone(), r.url.clone()));
+        if let Some((name, url)) = entry {
+            self.edit_name = name;
+            self.edit_url = url.clone();
+            self.edit_original_url = url;
+            self.edit_field = EditField::Name;
+            self.edit_mode = true;
+        }
+    }
+
+    fn save_edit(&mut self) {
+        let original_url = self.edit_original_url.clone();
+        let new_name = self.edit_name.clone();
+        let new_url = self.edit_url.clone();
+
+        if let Some(r) = self.results.iter_mut().find(|r| r.url == original_url) {
+            r.name = new_name.clone();
+            r.url = new_url.clone();
+        }
+
+        let _ = update_bookmarks_file(&self.bookmarks_path, &original_url, &new_name, &new_url);
+    }
+
+    fn confirm_delete_selected(&mut self) {
+        let idx = match self.table_state.selected() {
+            Some(i) => i,
+            None => return,
+        };
+        let results = self.sorted_results();
+        if let Some(r) = results.get(idx) {
+            self.delete_target_url = r.url.clone();
+            self.confirm_delete = true;
+        }
+    }
+
+    fn do_delete(&mut self) {
+        let url = std::mem::take(&mut self.delete_target_url);
+        if url.is_empty() {
+            return;
+        }
+        let idx = self.table_state.selected().unwrap_or(0);
+
+        let _ = delete_bookmark_from_file(&self.bookmarks_path, &url);
+
+        self.results.retain(|r| r.url != url);
+        self.total = self.total.saturating_sub(1);
+        if self.total > 0 {
+            let len = self.row_count();
+            if idx >= len && len > 0 {
+                self.table_state.select(Some(len - 1));
+            }
+        } else {
+            self.table_state.select(None);
+        }
+    }
+
+    fn request_refresh(&mut self) {
+        self.refresh_requested = true;
+    }
+
+    pub fn reset(&mut self) {
+        self.results.clear();
+        self.checked = 0;
+        self.invalid = 0;
+        self.checking_done = false;
+        self.sort_by_status = false;
+        self.search_query.clear();
+        self.search_mode = false;
+        self.refresh_requested = false;
+        self.table_state.select(Some(0));
+    }
+
+    fn selected_url(&self) -> Option<String> {
+        let idx = self.table_state.selected()?;
+        let results = self.sorted_results();
+        results.get(idx).map(|r| r.url.clone())
+    }
+
+    fn open_selected_url(&self) {
+        if let Some(url) = self.selected_url() {
+            let _ = open_url(&url);
+        }
+    }
+}
+
+/// 중앙 팝업 영역 계산
+fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
+    let popup_width = area.width * percent_x / 100;
+    let x = (area.width.saturating_sub(popup_width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    Rect::new(x, y, popup_width, height)
+}
+
+/// TUI 프로필 선택 화면
+pub fn run_profile_selector(profiles: &[ProfileInfo]) -> io::Result<Option<usize>> {
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let mut selected: usize = 0;
+    let result = loop {
+        terminal.draw(|f| {
+            let area = f.area();
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .horizontal_margin(0)
+                .vertical_margin(0)
+                .constraints([Constraint::Min(3), Constraint::Length(3)])
+                .split(area);
+
+            let items: Vec<Row> = profiles
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    let style = if i == selected {
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    };
+                    Row::new(vec![
+                        Cell::from(format!("{}", i + 1)),
+                        Cell::from(p.display_name.as_str()),
+                        Cell::from(p.dir_name.as_str()),
+                    ])
+                    .style(style)
+                })
+                .collect();
+
+            let table = Table::new(
+                items,
+                [
+                    Constraint::Length(4),
+                    Constraint::Percentage(50),
+                    Constraint::Percentage(50),
+                ],
+            )
+            .header(
+                Row::new(vec!["#", "Profile", "Directory"])
+                    .style(Style::default().add_modifier(Modifier::BOLD))
+                    .bottom_margin(1),
+            )
+            .block(
+                Block::default()
+                    .title(" Chrome Profiles ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan)),
+            )
+            .highlight_symbol(">> ");
+
+            f.render_widget(table, chunks[0]);
+
+            let help = Paragraph::new(" [↑/↓/j/k] Navigate  [Enter] Select  [q] Quit")
+                .style(Style::default().fg(Color::DarkGray))
+                .block(Block::default().borders(Borders::ALL));
+            f.render_widget(help, chunks[1]);
+        })?;
+
+        if event::poll(Duration::from_millis(100))? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                match key.code {
+                    KeyCode::Char('q') => break None,
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        selected = selected.saturating_sub(1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        selected = (selected + 1).min(profiles.len() - 1);
+                    }
+                    KeyCode::Enter => break Some(selected),
+                    _ => {}
+                }
+            }
+        }
+    };
+
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    Ok(result)
+}
+
+/// TUI 메인 화면 렌더링
+fn render_app(f: &mut Frame, app: &mut App) {
+    let area = f.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .horizontal_margin(0)
+        .vertical_margin(0)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(5),
+            Constraint::Length(3),
+        ])
+        .split(area);
+
+    // 상단: 프로필 정보 + 설정값 + 진행률
+    let settings = format!(
+        "Concurrency: {}  Timeout: {}s",
+        app.concurrency, app.timeout
+    );
+    let header_text = if app.checking_done {
+        let valid = app.total - app.invalid;
+        let sort_status = if app.sort_by_status {
+            "  [Sort: Status]"
+        } else {
+            ""
+        };
+        format!(
+            " Profile: {}  |  Total: {}  Valid: {}  Invalid: {}  |  {}{}",
+            app.profile_name, app.total, valid, app.invalid, settings, sort_status
+        )
+    } else {
+        format!(
+            " Profile: {}  |  Checking: {}/{}  |  {}",
+            app.profile_name, app.checked, app.total, settings
+        )
+    };
+
+    let progress_ratio = if app.total > 0 {
+        (app.checked as f64 / app.total as f64).min(1.0)
+    } else {
+        1.0
+    };
+
+    let gauge = Gauge::default()
+        .block(
+            Block::default()
+                .title(header_text)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .gauge_style(
+            Style::default()
+                .fg(if app.checking_done {
+                    Color::Green
+                } else {
+                    Color::Yellow
+                })
+                .bg(Color::DarkGray),
+        )
+        .ratio(progress_ratio);
+    f.render_widget(gauge, chunks[0]);
+
+    // 중앙: 결과 테이블
+    let sorted: Vec<CheckResult> = app.sorted_results().into_iter().cloned().collect();
+    let rows: Vec<Row> = sorted
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let status_style = if r.is_valid {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::Red)
+            };
+            Row::new(vec![
+                Cell::from(format!("{}", i + 1)),
+                Cell::from(r.status.as_str()).style(status_style),
+                Cell::from(r.name.as_str()),
+                Cell::from(r.url.as_str()),
+            ])
+        })
+        .collect();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(6),
+            Constraint::Length(18),
+            Constraint::Percentage(30),
+            Constraint::Percentage(55),
+        ],
+    )
+    .header(
+        Row::new(vec!["#", "STATUS", "NAME", "URL"])
+            .style(
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .fg(Color::Cyan),
+            )
+            .bottom_margin(1),
+    )
+    .block(
+        Block::default()
+            .title(" Results ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan)),
+    )
+    .row_highlight_style(Style::default().bg(Color::DarkGray))
+    .highlight_symbol(">> ");
+
+    f.render_stateful_widget(table, chunks[1], &mut app.table_state);
+
+    // 편집 모드: 중앙에 팝업
+    if app.edit_mode {
+        let popup_area = centered_rect(60, 7, area);
+        f.render_widget(Clear, popup_area);
+
+        let edit_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Length(1),
+            ])
+            .split(popup_area);
+
+        let name_style = if app.edit_field == EditField::Name {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let name_input = Paragraph::new(app.edit_name.as_str())
+            .style(name_style)
+            .block(
+                Block::default()
+                    .title(" Name ")
+                    .borders(Borders::ALL)
+                    .border_style(name_style),
+            );
+        f.render_widget(name_input, edit_chunks[0]);
+
+        let url_style = if app.edit_field == EditField::Url {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let url_input = Paragraph::new(app.edit_url.as_str())
+            .style(url_style)
+            .block(
+                Block::default()
+                    .title(" URL ")
+                    .borders(Borders::ALL)
+                    .border_style(url_style),
+            );
+        f.render_widget(url_input, edit_chunks[1]);
+
+        let hint = Paragraph::new(" [Tab] Switch field  [Enter] Save  [Esc] Cancel")
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(hint, edit_chunks[2]);
+    }
+
+    // 삭제 확인 팝업
+    if app.confirm_delete {
+        let popup_area = centered_rect(50, 5, area);
+        f.render_widget(Clear, popup_area);
+
+        let confirm_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Length(2)])
+            .split(popup_area);
+
+        let msg = Paragraph::new(format!(" Delete: {}", app.delete_target_url))
+            .style(Style::default().fg(Color::Red))
+            .block(
+                Block::default()
+                    .title(" Confirm Delete ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Red)),
+            );
+        f.render_widget(msg, confirm_chunks[0]);
+
+        let hint = Paragraph::new(" [y] Yes  [any other key] Cancel")
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(hint, confirm_chunks[1]);
+    }
+
+    // 하단: 검색 모드 또는 도움말
+    if app.search_mode {
+        let filtered_count = app.sorted_results().len();
+        let match_info = if app.search_query.is_empty() {
+            String::new()
+        } else {
+            format!("  ({filtered_count} matches)")
+        };
+        let search_text = format!(" /{}{}", app.search_query, match_info);
+        let help = Paragraph::new(search_text)
+            .style(Style::default().fg(Color::Yellow))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow)),
+            );
+        f.render_widget(help, chunks[2]);
+    } else {
+        let search_info = if !app.search_query.is_empty() {
+            let filtered_count = app.sorted_results().len();
+            format!(
+                "  [Filter: \"{}\" {} matches]",
+                app.search_query, filtered_count
+            )
+        } else {
+            String::new()
+        };
+        let help_text = format!(
+            " [↑/↓/j/k] Navigate  [PgUp/PgDn/C-u/C-d] Page  [g/G] Top/Bottom  [s] Sort  [o] Open  [e] Edit  [dd] Delete  [/] Filter  [r] Refresh  [q] Quit{search_info}"
+        );
+        let help = Paragraph::new(help_text)
+            .style(Style::default().fg(Color::DarkGray))
+            .block(Block::default().borders(Borders::ALL));
+        f.render_widget(help, chunks[2]);
+    }
+}
+
+/// 백그라운드 URL 검사 태스크 생성
+fn spawn_check_task(
+    entries: Vec<BookmarkEntry>,
+    app: Arc<Mutex<App>>,
+    client: Arc<reqwest::Client>,
+    checked_count: Arc<AtomicUsize>,
+    concurrency: usize,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        stream::iter(entries)
+            .map(|entry| {
+                let client = client.clone();
+                let app = app.clone();
+                let checked = checked_count.clone();
+                async move {
+                    let (status_code, status_text) = check_url(&client, &entry.url).await;
+                    let is_valid = (200..400).contains(&status_code);
+                    let done = checked.fetch_add(1, Ordering::Relaxed) + 1;
+
+                    let result = CheckResult {
+                        name: entry.name,
+                        url: entry.url,
+                        status: status_text,
+                        is_valid,
+                    };
+
+                    let mut app = app.lock().unwrap();
+                    app.results.push(result);
+                    app.checked = done;
+                    if !is_valid {
+                        app.invalid += 1;
+                    }
+                }
+            })
+            .buffer_unordered(concurrency)
+            .collect::<Vec<()>>()
+            .await;
+    })
+}
+
+/// 검사 중 실시간 TUI 업데이트 루프
+pub async fn run_check_tui(
+    app: Arc<Mutex<App>>,
+    entries: Vec<BookmarkEntry>,
+    client: Arc<reqwest::Client>,
+    concurrency: usize,
+) -> io::Result<()> {
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let total = entries.len();
+    let checked_count = Arc::new(AtomicUsize::new(0));
+
+    let mut check_handle = spawn_check_task(
+        entries.clone(),
+        app.clone(),
+        client.clone(),
+        checked_count.clone(),
+        concurrency,
+    );
+
+    // TUI 렌더링 + 이벤트 루프
+    'outer: loop {
+        // refresh 요청 확인
+        {
+            let mut locked = app.lock().unwrap();
+            if locked.refresh_requested {
+                locked.reset();
+                drop(locked);
+                check_handle.abort();
+                checked_count.store(0, Ordering::Relaxed);
+                check_handle = spawn_check_task(
+                    entries.clone(),
+                    app.clone(),
+                    client.clone(),
+                    checked_count.clone(),
+                    concurrency,
+                );
+                continue;
+            }
+        }
+
+        {
+            let mut app = app.lock().unwrap();
+            terminal.draw(|f| render_app(f, &mut app))?;
+        }
+
+        if event::poll(Duration::from_millis(50))? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                let mut app = app.lock().unwrap();
+                if app.handle_key(&key) {
+                    break 'outer;
+                }
+            }
+        }
+
+        let done = checked_count.load(Ordering::Relaxed);
+        if done >= total && !app.lock().unwrap().refresh_requested {
+            {
+                let mut locked = app.lock().unwrap();
+                locked.checking_done = true;
+            }
+            // 검사 완료 후 이벤트 루프
+            loop {
+                {
+                    let mut locked = app.lock().unwrap();
+                    terminal.draw(|f| render_app(f, &mut locked))?;
+                }
+                if event::poll(Duration::from_millis(100))? {
+                    if let Event::Key(key) = event::read()? {
+                        if key.kind != KeyEventKind::Press {
+                            continue;
+                        }
+                        let mut locked = app.lock().unwrap();
+                        if locked.handle_key(&key) {
+                            break 'outer;
+                        }
+                        if locked.refresh_requested {
+                            break; // 내부 루프 탈출 → 외부 루프에서 refresh 처리
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    check_handle.abort();
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+
+    let app = app.lock().unwrap();
+    if app.invalid > 0 {
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
