@@ -440,7 +440,7 @@ pub fn run_profile_selector(profiles: &[ProfileInfo]) -> io::Result<Option<usize
             .header(
                 Row::new(vec!["#", "Profile", "Directory"])
                     .style(Style::default().add_modifier(Modifier::BOLD))
-                    .bottom_margin(1),
+                    .bottom_margin(0),
             )
             .block(
                 Block::default()
@@ -590,7 +590,7 @@ fn render_app(f: &mut Frame, app: &mut App) {
                     .add_modifier(Modifier::BOLD)
                     .fg(Color::Cyan),
             )
-            .bottom_margin(1),
+            .bottom_margin(0),
     )
     .block(
         Block::default()
