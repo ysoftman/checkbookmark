@@ -8,6 +8,7 @@ use clap::Parser;
 use colored::Colorize;
 use futures::stream::{self, StreamExt};
 use serde::Deserialize;
+use unicode_width::UnicodeWidthStr;
 
 /// CLI 인자 정의
 #[derive(Parser)]
@@ -36,6 +37,10 @@ struct Cli {
     /// 유효하지 않은 URL만 표시
     #[arg(long)]
     invalid_only: bool,
+
+    /// URL 검사 없이 북마크 목록만 표시
+    #[arg(short, long)]
+    list: bool,
 }
 
 /// Chrome 북마크 JSON 최상위 구조
@@ -266,12 +271,62 @@ fn parse_bookmarks(path: &PathBuf) -> Vec<BookmarkEntry> {
     entries
 }
 
-/// 문자열을 최대 길이로 자르고 초과 시 "..." 추가
+/// 문자열을 표시 너비 기준으로 자르고 초과 시 "..." 추가
 fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
+    let width = UnicodeWidthStr::width(s);
+    if width <= max {
         s.to_string()
     } else {
-        format!("{}...", s.chars().take(max - 3).collect::<String>())
+        let mut w = 0;
+        let truncated: String = s
+            .chars()
+            .take_while(|c| {
+                w += unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
+                w <= max - 3
+            })
+            .collect();
+        format!("{truncated}...")
+    }
+}
+
+/// 문자열을 표시 너비 기준으로 고정 폭 패딩 적용
+fn pad_width(s: &str, width: usize) -> String {
+    let display_w = UnicodeWidthStr::width(s);
+    if display_w >= width {
+        s.to_string()
+    } else {
+        format!("{}{}", s, " ".repeat(width - display_w))
+    }
+}
+
+/// 북마크 목록만 테이블 형식으로 출력
+fn print_list(entries: &[BookmarkEntry]) {
+    if entries.is_empty() {
+        println!("  No bookmarks found.");
+        return;
+    }
+
+    let num_w = entries.len().to_string().len().max(1);
+    let name_w = 40;
+
+    println!(
+        "  {:<num_w$}  {:<name_w$}  {}",
+        "#".bold(),
+        "NAME".bold(),
+        "URL".bold(),
+    );
+    println!("  {}", "-".repeat(num_w + 2 + name_w + 2 + 60));
+
+    for (i, entry) in entries.iter().enumerate() {
+        let idx = format!("{}", i + 1);
+        let name = truncate(&entry.name, name_w);
+        let name_padded = pad_width(&name, name_w);
+        println!(
+            "  {:<num_w$}  {}  {}",
+            idx.dimmed(),
+            name_padded,
+            entry.url.dimmed(),
+        );
     }
 }
 
@@ -314,13 +369,14 @@ fn print_table(results: &[CheckResult], invalid_only: bool) {
             format!("{:<status_w$}", r.status).red().to_string()
         };
         let name = truncate(&r.name, name_w);
+        let name_padded = pad_width(&name, name_w);
         let url = &r.url;
 
         println!(
-            "  {:<num_w$}  {}  {:<name_w$}  {}",
+            "  {:<num_w$}  {}  {}  {}",
             idx.dimmed(),
             status,
-            name,
+            name_padded,
             url.dimmed(),
         );
     }
@@ -478,6 +534,14 @@ async fn main() {
 
         let entries = parse_bookmarks(path);
         let total = entries.len();
+
+        if cli.list {
+            print_list(&entries);
+            println!();
+            total_all += total;
+            continue;
+        }
+
         let results = check_entries(entries, client.clone(), cli.concurrency).await;
         let invalid = results.iter().filter(|r| !r.is_valid).count();
 
@@ -491,11 +555,16 @@ async fn main() {
     // 전체 요약 출력
     println!("{}", "=".repeat(70));
     println!();
-    print_summary(total_all, invalid_all);
-    println!();
+    if cli.list {
+        println!("  {}  {}", "Total".bold(), total_all.to_string().bold());
+        println!();
+    } else {
+        print_summary(total_all, invalid_all);
+        println!();
 
-    // 무효한 URL이 있으면 exit code 1
-    if invalid_all > 0 {
-        std::process::exit(1);
+        // 무효한 URL이 있으면 exit code 1
+        if invalid_all > 0 {
+            std::process::exit(1);
+        }
     }
 }
