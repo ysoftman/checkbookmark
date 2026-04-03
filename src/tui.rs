@@ -47,6 +47,7 @@ pub struct App {
 pub enum SortMode {
     None,
     Status,
+    Folder,
     Name,
     Url,
 }
@@ -104,7 +105,8 @@ impl App {
             self.results
                 .iter()
                 .filter(|r| {
-                    r.name.to_lowercase().contains(&query)
+                    r.folder.to_lowercase().contains(&query)
+                        || r.name.to_lowercase().contains(&query)
                         || r.url.to_lowercase().contains(&query)
                         || r.status.to_lowercase().contains(&query)
                 })
@@ -116,6 +118,12 @@ impl App {
             SortMode::Status => {
                 results.sort_by(|a, b| {
                     let cmp = a.is_valid.cmp(&b.is_valid).then(a.status.cmp(&b.status));
+                    if asc { cmp } else { cmp.reverse() }
+                });
+            }
+            SortMode::Folder => {
+                results.sort_by(|a, b| {
+                    let cmp = a.folder.to_lowercase().cmp(&b.folder.to_lowercase());
                     if asc { cmp } else { cmp.reverse() }
                 });
             }
@@ -255,6 +263,7 @@ impl App {
             KeyCode::Char('g') => self.go_top(),
             KeyCode::Char('G') => self.go_bottom(),
             KeyCode::Char('s') => self.set_sort_mode(SortMode::Status),
+            KeyCode::Char('f') => self.set_sort_mode(SortMode::Folder),
             KeyCode::Char('n') => self.set_sort_mode(SortMode::Name),
             KeyCode::Char('u') if !ctrl => self.set_sort_mode(SortMode::Url),
             KeyCode::Char('o') => self.open_selected_url(),
@@ -601,6 +610,7 @@ fn render_app(f: &mut Frame, app: &mut App) {
             Row::new(vec![
                 Cell::from(format!("{}", i + 1)),
                 Cell::from(r.status.as_str()).style(status_style),
+                Cell::from(r.folder.as_str()),
                 Cell::from(r.name.as_str()),
                 Cell::from(r.url.as_str()),
             ])
@@ -610,10 +620,11 @@ fn render_app(f: &mut Frame, app: &mut App) {
     let table = Table::new(
         rows,
         [
-            Constraint::Length(6),
-            Constraint::Length(18),
-            Constraint::Percentage(30),
-            Constraint::Percentage(55),
+            Constraint::Length(5),
+            Constraint::Length(16),
+            Constraint::Percentage(12),
+            Constraint::Percentage(25),
+            Constraint::Percentage(48),
         ],
     )
     .header({
@@ -633,13 +644,23 @@ fn render_app(f: &mut Frame, app: &mut App) {
         } else {
             "URL".to_string()
         };
-        Row::new(vec!["#".to_string(), status_label, name_label, url_label])
-            .style(
-                Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(Color::Cyan),
-            )
-            .bottom_margin(0)
+        Row::new(vec![
+            "#".to_string(),
+            status_label,
+            if app.sort_mode == SortMode::Folder {
+                format!("FOLDER{arrow}")
+            } else {
+                "FOLDER".to_string()
+            },
+            name_label,
+            url_label,
+        ])
+        .style(
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Cyan),
+        )
+        .bottom_margin(0)
     })
     .block(
         Block::default()
@@ -767,7 +788,7 @@ fn render_app(f: &mut Frame, app: &mut App) {
             String::new()
         };
         let help_text = format!(
-            " [↑/↓/j/k] Navigate  [PgUp/PgDn/C-u/C-d] Page  [g/G] Top/Bottom  [s/n/u] Sort  [o] Open  [e] Edit  [dd] Delete  [/] Filter  [r] Refresh  [q] Quit{search_info}"
+            " [↑/↓/j/k] Navigate  [PgUp/PgDn/C-u/C-d] Page  [g/G] Top/Bottom  [s/f/n/u] Sort  [o] Open  [e] Edit  [dd] Delete  [/] Filter  [r] Refresh  [q] Quit{search_info}"
         );
         let help = Paragraph::new(help_text)
             .style(Style::default().fg(Color::DarkGray))
@@ -796,6 +817,7 @@ fn spawn_check_task(
                     let done = checked.fetch_add(1, Ordering::Relaxed) + 1;
 
                     let result = CheckResult {
+                        folder: entry.folder,
                         name: entry.name,
                         url: entry.url,
                         status: status_text,

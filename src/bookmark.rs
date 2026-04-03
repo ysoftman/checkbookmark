@@ -33,6 +33,7 @@ struct BookmarkNode {
 /// 파싱된 북마크 항목
 #[derive(Clone)]
 pub struct BookmarkEntry {
+    pub folder: String,
     pub name: String,
     pub url: String,
 }
@@ -40,6 +41,7 @@ pub struct BookmarkEntry {
 /// URL 검사 결과
 #[derive(Debug, Clone)]
 pub struct CheckResult {
+    pub folder: String,
     pub name: String,
     pub url: String,
     pub status: String,
@@ -64,6 +66,7 @@ fn collect_urls(node: &BookmarkNode, folder_path: &str, entries: &mut Vec<Bookma
     if node.node_type == "url" {
         if let Some(url) = &node.url {
             entries.push(BookmarkEntry {
+                folder: folder_path.to_string(),
                 name: node.name.clone(),
                 url: url.clone(),
             });
