@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crossterm::cursor::Show;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -24,7 +25,8 @@ pub struct App {
     pub invalid: usize,
     pub table_state: TableState,
     pub checking_done: bool,
-    pub sort_by_status: bool,
+    pub sort_mode: SortMode,
+    pub sort_ascending: bool,
     pub concurrency: usize,
     pub timeout: u64,
     pub search_mode: bool,
@@ -39,6 +41,14 @@ pub struct App {
     pub edit_name: String,
     pub edit_url: String,
     pub edit_original_url: String,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum SortMode {
+    None,
+    Status,
+    Name,
+    Url,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -67,7 +77,8 @@ impl App {
             invalid: 0,
             table_state,
             checking_done: false,
-            sort_by_status: false,
+            sort_mode: SortMode::None,
+            sort_ascending: true,
             concurrency,
             timeout,
             search_mode: false,
@@ -99,14 +110,38 @@ impl App {
                 })
                 .collect()
         };
-        if self.sort_by_status {
-            results.sort_by(|a, b| a.is_valid.cmp(&b.is_valid).then(a.status.cmp(&b.status)));
+        let asc = self.sort_ascending;
+        match self.sort_mode {
+            SortMode::None => {}
+            SortMode::Status => {
+                results.sort_by(|a, b| {
+                    let cmp = a.is_valid.cmp(&b.is_valid).then(a.status.cmp(&b.status));
+                    if asc { cmp } else { cmp.reverse() }
+                });
+            }
+            SortMode::Name => {
+                results.sort_by(|a, b| {
+                    let cmp = a.name.to_lowercase().cmp(&b.name.to_lowercase());
+                    if asc { cmp } else { cmp.reverse() }
+                });
+            }
+            SortMode::Url => {
+                results.sort_by(|a, b| {
+                    let cmp = a.url.to_lowercase().cmp(&b.url.to_lowercase());
+                    if asc { cmp } else { cmp.reverse() }
+                });
+            }
         }
         results
     }
 
-    fn toggle_sort_by_status(&mut self) {
-        self.sort_by_status = !self.sort_by_status;
+    fn set_sort_mode(&mut self, mode: SortMode) {
+        if self.sort_mode == mode {
+            self.sort_ascending = !self.sort_ascending;
+        } else {
+            self.sort_mode = mode;
+            self.sort_ascending = true;
+        }
         self.table_state.select(Some(0));
     }
 
@@ -219,7 +254,9 @@ impl App {
             KeyCode::Char('d') => self.pending_d = true,
             KeyCode::Char('g') => self.go_top(),
             KeyCode::Char('G') => self.go_bottom(),
-            KeyCode::Char('s') => self.toggle_sort_by_status(),
+            KeyCode::Char('s') => self.set_sort_mode(SortMode::Status),
+            KeyCode::Char('n') => self.set_sort_mode(SortMode::Name),
+            KeyCode::Char('u') if !ctrl => self.set_sort_mode(SortMode::Url),
             KeyCode::Char('o') => self.open_selected_url(),
             KeyCode::Char('e') => self.enter_edit_mode(),
             KeyCode::Char('/') => {
@@ -361,7 +398,8 @@ impl App {
         self.checked = 0;
         self.invalid = 0;
         self.checking_done = false;
-        self.sort_by_status = false;
+        self.sort_mode = SortMode::None;
+        self.sort_ascending = true;
         self.search_query.clear();
         self.search_mode = false;
         self.refresh_requested = false;
@@ -479,7 +517,7 @@ pub fn run_profile_selector(profiles: &[ProfileInfo]) -> io::Result<Option<usize
     };
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, Show)?;
     Ok(result)
 }
 
@@ -504,11 +542,6 @@ fn render_app(f: &mut Frame, app: &mut App) {
     );
     let header_spans: Vec<Span> = if app.checking_done {
         let valid = app.total - app.invalid;
-        let sort_status = if app.sort_by_status {
-            "  [Sort: Status]"
-        } else {
-            ""
-        };
         vec![
             Span::raw(format!(
                 " Profile: {}  |  Total: {}  ",
@@ -520,7 +553,7 @@ fn render_app(f: &mut Frame, app: &mut App) {
                 format!("Invalid: {}", app.invalid),
                 Style::default().fg(Color::Yellow),
             ),
-            Span::raw(format!("  |  {settings}{sort_status}")),
+            Span::raw(format!("  |  {settings}")),
         ]
     } else {
         vec![Span::raw(format!(
@@ -583,15 +616,31 @@ fn render_app(f: &mut Frame, app: &mut App) {
             Constraint::Percentage(55),
         ],
     )
-    .header(
-        Row::new(vec!["#", "STATUS", "NAME", "URL"])
+    .header({
+        let arrow = if app.sort_ascending { " ▲" } else { " ▼" };
+        let status_label = if app.sort_mode == SortMode::Status {
+            format!("STATUS{arrow}")
+        } else {
+            "STATUS".to_string()
+        };
+        let name_label = if app.sort_mode == SortMode::Name {
+            format!("NAME{arrow}")
+        } else {
+            "NAME".to_string()
+        };
+        let url_label = if app.sort_mode == SortMode::Url {
+            format!("URL{arrow}")
+        } else {
+            "URL".to_string()
+        };
+        Row::new(vec!["#".to_string(), status_label, name_label, url_label])
             .style(
                 Style::default()
                     .add_modifier(Modifier::BOLD)
                     .fg(Color::Cyan),
             )
-            .bottom_margin(0),
-    )
+            .bottom_margin(0)
+    })
     .block(
         Block::default()
             .title(" Results ")
@@ -654,6 +703,15 @@ fn render_app(f: &mut Frame, app: &mut App) {
         let hint = Paragraph::new(" [Tab] Switch field  [Enter] Save  [Esc] Cancel")
             .style(Style::default().fg(Color::DarkGray));
         f.render_widget(hint, edit_chunks[2]);
+
+        // 활성 필드에 커서 표시
+        let (cursor_area, text_len) = match app.edit_field {
+            EditField::Name => (edit_chunks[0], app.edit_name.len() as u16),
+            EditField::Url => (edit_chunks[1], app.edit_url.len() as u16),
+        };
+        let cursor_x = cursor_area.x + 1 + text_len;
+        let cursor_y = cursor_area.y + 1;
+        f.set_cursor_position((cursor_x, cursor_y));
     }
 
     // 삭제 확인 팝업
@@ -709,7 +767,7 @@ fn render_app(f: &mut Frame, app: &mut App) {
             String::new()
         };
         let help_text = format!(
-            " [↑/↓/j/k] Navigate  [PgUp/PgDn/C-u/C-d] Page  [g/G] Top/Bottom  [s] Sort  [o] Open  [e] Edit  [dd] Delete  [/] Filter  [r] Refresh  [q] Quit{search_info}"
+            " [↑/↓/j/k] Navigate  [PgUp/PgDn/C-u/C-d] Page  [g/G] Top/Bottom  [s/n/u] Sort  [o] Open  [e] Edit  [dd] Delete  [/] Filter  [r] Refresh  [q] Quit{search_info}"
         );
         let help = Paragraph::new(help_text)
             .style(Style::default().fg(Color::DarkGray))
@@ -852,7 +910,7 @@ pub async fn run_check_tui(
 
     check_handle.abort();
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, Show)?;
 
     let app = app.lock().unwrap();
     if app.invalid > 0 {
