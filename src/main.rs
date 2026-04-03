@@ -60,6 +60,7 @@ struct BookmarkNode {
 }
 
 /// 파싱된 북마크 항목
+#[derive(Clone)]
 struct BookmarkEntry {
     name: String,
     url: String,
@@ -232,6 +233,9 @@ struct App {
     sort_by_status: bool,
     concurrency: usize,
     timeout: u64,
+    search_mode: bool,
+    search_query: String,
+    refresh_requested: bool,
 }
 
 impl App {
@@ -251,13 +255,27 @@ impl App {
             sort_by_status: false,
             concurrency,
             timeout,
+            search_mode: false,
+            search_query: String::new(),
+            refresh_requested: false,
         }
     }
 
     fn sorted_results(&self) -> Vec<&CheckResult> {
-        let mut results: Vec<&CheckResult> = self.results.iter().collect();
+        let query = self.search_query.to_lowercase();
+        let mut results: Vec<&CheckResult> = if query.is_empty() {
+            self.results.iter().collect()
+        } else {
+            self.results
+                .iter()
+                .filter(|r| {
+                    r.name.to_lowercase().contains(&query)
+                        || r.url.to_lowercase().contains(&query)
+                        || r.status.to_lowercase().contains(&query)
+                })
+                .collect()
+        };
         if self.sort_by_status {
-            // invalid(status 비정상)을 먼저, valid를 나중에 표시
             results.sort_by(|a, b| a.is_valid.cmp(&b.is_valid).then(a.status.cmp(&b.status)));
         }
         results
@@ -324,9 +342,19 @@ impl App {
     }
 
     fn handle_key(&mut self, key: &crossterm::event::KeyEvent) -> bool {
+        if self.search_mode {
+            return self.handle_search_key(key);
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => return true,
+            KeyCode::Char('q') | KeyCode::Esc => {
+                if !self.search_query.is_empty() {
+                    self.search_query.clear();
+                    self.table_state.select(Some(0));
+                } else {
+                    return true;
+                }
+            }
             KeyCode::Up | KeyCode::Char('k') => self.scroll_up(),
             KeyCode::Down | KeyCode::Char('j') => self.scroll_down(),
             KeyCode::PageDown => self.page_down(),
@@ -336,10 +364,82 @@ impl App {
             KeyCode::Char('g') => self.go_top(),
             KeyCode::Char('G') => self.go_bottom(),
             KeyCode::Char('s') => self.toggle_sort_by_status(),
+            KeyCode::Char('o') => self.open_selected_url(),
+            KeyCode::Char('/') => {
+                self.search_mode = true;
+                self.search_query.clear();
+            }
+            KeyCode::Char('r') => self.request_refresh(),
             _ => {}
         }
         false
     }
+
+    fn handle_search_key(&mut self, key: &crossterm::event::KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc => {
+                self.search_mode = false;
+                self.search_query.clear();
+                self.table_state.select(Some(0));
+            }
+            KeyCode::Enter => {
+                self.search_mode = false;
+                self.table_state.select(Some(0));
+            }
+            KeyCode::Backspace => {
+                self.search_query.pop();
+                self.table_state.select(Some(0));
+            }
+            KeyCode::Char(c) => {
+                self.search_query.push(c);
+                self.table_state.select(Some(0));
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn request_refresh(&mut self) {
+        self.refresh_requested = true;
+    }
+
+    fn reset(&mut self) {
+        self.results.clear();
+        self.checked = 0;
+        self.invalid = 0;
+        self.checking_done = false;
+        self.sort_by_status = false;
+        self.search_query.clear();
+        self.search_mode = false;
+        self.refresh_requested = false;
+        self.table_state.select(Some(0));
+    }
+
+    fn selected_url(&self) -> Option<String> {
+        let idx = self.table_state.selected()?;
+        let results = self.sorted_results();
+        results.get(idx).map(|r| r.url.clone())
+    }
+
+    fn open_selected_url(&self) {
+        if let Some(url) = self.selected_url() {
+            let _ = open_url(&url);
+        }
+    }
+}
+
+/// OS별 기본 브라우저로 URL 열기
+fn open_url(url: &str) -> io::Result<()> {
+    if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(url).spawn()?;
+    } else if cfg!(target_os = "linux") {
+        std::process::Command::new("xdg-open").arg(url).spawn()?;
+    } else {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", url])
+            .spawn()?;
+    }
+    Ok(())
 }
 
 /// TUI 프로필 선택 화면
@@ -547,40 +647,57 @@ fn render_app(f: &mut Frame, app: &mut App) {
 
     f.render_stateful_widget(table, chunks[1], &mut app.table_state);
 
-    // 하단: 도움말
-    let help = Paragraph::new(
-        " [↑/↓/j/k] Navigate  [PgUp/PgDn/C-u/C-d] Page  [g/G] Top/Bottom  [s] Sort Status  [q] Quit",
-    )
-    .style(Style::default().fg(Color::DarkGray))
-    .block(Block::default().borders(Borders::ALL));
-    f.render_widget(help, chunks[2]);
+    // 하단: 검색 모드 또는 도움말
+    if app.search_mode {
+        let filtered_count = app.sorted_results().len();
+        let match_info = if app.search_query.is_empty() {
+            String::new()
+        } else {
+            format!("  ({filtered_count} matches)")
+        };
+        let search_text = format!(" /{}{}", app.search_query, match_info);
+        let help = Paragraph::new(search_text)
+            .style(Style::default().fg(Color::Yellow))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow)),
+            );
+        f.render_widget(help, chunks[2]);
+    } else {
+        let search_info = if !app.search_query.is_empty() {
+            let filtered_count = app.sorted_results().len();
+            format!(
+                "  [Filter: \"{}\" {} matches]",
+                app.search_query, filtered_count
+            )
+        } else {
+            String::new()
+        };
+        let help_text = format!(
+            " [↑/↓/j/k] Navigate  [PgUp/PgDn/C-u/C-d] Page  [g/G] Top/Bottom  [s] Sort  [o] Open  [/] Filter  [r] Refresh  [q] Quit{search_info}"
+        );
+        let help = Paragraph::new(help_text)
+            .style(Style::default().fg(Color::DarkGray))
+            .block(Block::default().borders(Borders::ALL));
+        f.render_widget(help, chunks[2]);
+    }
 }
 
-/// 검사 중 실시간 TUI 업데이트 루프
-async fn run_check_tui(
-    app: Arc<Mutex<App>>,
+/// 백그라운드 URL 검사 태스크 생성
+fn spawn_check_task(
     entries: Vec<BookmarkEntry>,
+    app: Arc<Mutex<App>>,
     client: Arc<reqwest::Client>,
+    checked_count: Arc<AtomicUsize>,
     concurrency: usize,
-) -> io::Result<()> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let total = entries.len();
-    let checked_count = Arc::new(AtomicUsize::new(0));
-
-    // 백그라운드에서 URL 검사 실행
-    let app_clone = app.clone();
-    let checked_clone = checked_count.clone();
-    let check_handle = tokio::spawn(async move {
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
         stream::iter(entries)
             .map(|entry| {
                 let client = client.clone();
-                let app = app_clone.clone();
-                let checked = checked_clone.clone();
+                let app = app.clone();
+                let checked = checked_count.clone();
                 async move {
                     let (status_code, status_text) = check_url(&client, &entry.url).await;
                     let is_valid = (200..400).contains(&status_code);
@@ -604,10 +721,54 @@ async fn run_check_tui(
             .buffer_unordered(concurrency)
             .collect::<Vec<()>>()
             .await;
-    });
+    })
+}
+
+/// 검사 중 실시간 TUI 업데이트 루프
+async fn run_check_tui(
+    app: Arc<Mutex<App>>,
+    entries: Vec<BookmarkEntry>,
+    client: Arc<reqwest::Client>,
+    concurrency: usize,
+) -> io::Result<()> {
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let total = entries.len();
+    let checked_count = Arc::new(AtomicUsize::new(0));
+
+    let mut check_handle = spawn_check_task(
+        entries.clone(),
+        app.clone(),
+        client.clone(),
+        checked_count.clone(),
+        concurrency,
+    );
 
     // TUI 렌더링 + 이벤트 루프
     'outer: loop {
+        // refresh 요청 확인
+        {
+            let mut locked = app.lock().unwrap();
+            if locked.refresh_requested {
+                locked.reset();
+                drop(locked);
+                check_handle.abort();
+                checked_count.store(0, Ordering::Relaxed);
+                check_handle = spawn_check_task(
+                    entries.clone(),
+                    app.clone(),
+                    client.clone(),
+                    checked_count.clone(),
+                    concurrency,
+                );
+                continue;
+            }
+        }
+
         {
             let mut app = app.lock().unwrap();
             terminal.draw(|f| render_app(f, &mut app))?;
@@ -626,7 +787,7 @@ async fn run_check_tui(
         }
 
         let done = checked_count.load(Ordering::Relaxed);
-        if done >= total {
+        if done >= total && !app.lock().unwrap().refresh_requested {
             {
                 let mut locked = app.lock().unwrap();
                 locked.checking_done = true;
@@ -645,6 +806,9 @@ async fn run_check_tui(
                         let mut locked = app.lock().unwrap();
                         if locked.handle_key(&key) {
                             break 'outer;
+                        }
+                        if locked.refresh_requested {
+                            break; // 내부 루프 탈출 → 외부 루프에서 refresh 처리
                         }
                     }
                 }
