@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -45,6 +46,7 @@ pub struct App {
     pub edit_cursor: usize,
     pub edit_original_url: String,
     pub edit_original_folder: String,
+    pub selected_urls: HashSet<String>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -102,6 +104,7 @@ impl App {
             edit_cursor: 0,
             edit_original_url: String::new(),
             edit_original_folder: String::new(),
+            selected_urls: HashSet::new(),
         }
     }
 
@@ -274,6 +277,8 @@ impl App {
             KeyCode::Char('f') => self.set_sort_mode(SortMode::Folder),
             KeyCode::Char('n') => self.set_sort_mode(SortMode::Name),
             KeyCode::Char('u') if !ctrl => self.set_sort_mode(SortMode::Url),
+            KeyCode::Char(' ') => self.toggle_select(),
+            KeyCode::Char('V') => self.toggle_select_all(),
             KeyCode::Char('o') => self.open_selected_url(),
             KeyCode::Char('e') => self.enter_edit_mode(),
             KeyCode::Char('/') => {
@@ -452,7 +457,47 @@ impl App {
         }
     }
 
+    fn toggle_select(&mut self) {
+        let idx = match self.table_state.selected() {
+            Some(i) => i,
+            None => return,
+        };
+        let results = self.sorted_results();
+        if let Some(r) = results.get(idx) {
+            let url = r.url.clone();
+            if self.selected_urls.contains(&url) {
+                self.selected_urls.remove(&url);
+            } else {
+                self.selected_urls.insert(url);
+            }
+        }
+        self.scroll_down();
+    }
+
+    fn toggle_select_all(&mut self) {
+        let visible_urls: Vec<String> = self
+            .sorted_results()
+            .iter()
+            .map(|r| r.url.clone())
+            .collect();
+        let all_selected = visible_urls.iter().all(|u| self.selected_urls.contains(u));
+        if all_selected {
+            for u in &visible_urls {
+                self.selected_urls.remove(u);
+            }
+        } else {
+            for u in visible_urls {
+                self.selected_urls.insert(u);
+            }
+        }
+    }
+
     fn confirm_delete_selected(&mut self) {
+        if !self.selected_urls.is_empty() {
+            self.delete_target_url = format!("{} bookmarks selected", self.selected_urls.len());
+            self.confirm_delete = true;
+            return;
+        }
         let idx = match self.table_state.selected() {
             Some(i) => i,
             None => return,
@@ -465,19 +510,29 @@ impl App {
     }
 
     fn do_delete(&mut self) {
-        let url = std::mem::take(&mut self.delete_target_url);
-        if url.is_empty() {
+        let target = std::mem::take(&mut self.delete_target_url);
+        if target.is_empty() {
             return;
         }
         let idx = self.table_state.selected().unwrap_or(0);
 
-        let _ = delete_bookmark_from_file(&self.bookmarks_path, &url);
+        if !self.selected_urls.is_empty() {
+            let urls: Vec<String> = self.selected_urls.drain().collect();
+            for url in &urls {
+                let _ = delete_bookmark_from_file(&self.bookmarks_path, url);
+            }
+            let url_set: HashSet<&String> = urls.iter().collect();
+            self.results.retain(|r| !url_set.contains(&r.url));
+            self.total = self.total.saturating_sub(urls.len());
+        } else {
+            let _ = delete_bookmark_from_file(&self.bookmarks_path, &target);
+            self.results.retain(|r| r.url != target);
+            self.total = self.total.saturating_sub(1);
+        }
 
-        self.results.retain(|r| r.url != url);
-        self.total = self.total.saturating_sub(1);
-        if self.total > 0 {
-            let len = self.row_count();
-            if idx >= len && len > 0 {
+        let len = self.row_count();
+        if len > 0 {
+            if idx >= len {
                 self.table_state.select(Some(len - 1));
             }
         } else {
@@ -499,6 +554,7 @@ impl App {
         self.search_query.clear();
         self.search_mode = false;
         self.refresh_requested = false;
+        self.selected_urls.clear();
         self.table_state.select(Some(0));
     }
 
@@ -689,18 +745,29 @@ fn render_app(f: &mut Frame, app: &mut App) {
         .iter()
         .enumerate()
         .map(|(i, r)| {
+            let is_selected = app.selected_urls.contains(&r.url);
             let status_style = if r.is_valid {
                 Style::default().fg(Color::Green)
             } else {
                 Style::default().fg(Color::Yellow)
             };
-            Row::new(vec![
-                Cell::from(format!("{}", i + 1)),
+            let row_num = if is_selected {
+                format!(" ✓{}", i + 1)
+            } else {
+                format!("{}", i + 1)
+            };
+            let row = Row::new(vec![
+                Cell::from(row_num),
                 Cell::from(r.status.as_str()).style(status_style),
                 Cell::from(r.folder.as_str()),
                 Cell::from(r.name.as_str()),
                 Cell::from(r.url.as_str()),
-            ])
+            ]);
+            if is_selected {
+                row.style(Style::default().fg(Color::Magenta))
+            } else {
+                row
+            }
         })
         .collect();
 
@@ -909,8 +976,13 @@ fn render_app(f: &mut Frame, app: &mut App) {
         } else {
             String::new()
         };
+        let select_info = if !app.selected_urls.is_empty() {
+            format!("  [Selected: {}]", app.selected_urls.len())
+        } else {
+            String::new()
+        };
         let help_text = format!(
-            " [↑/↓/j/k] Navigate  [PgUp/PgDn/C-u/C-d] Page  [g/G] Top/Bottom  [s/f/n/u] Sort  [o] Open  [e] Edit  [dd] Delete  [/] Filter  [r] Refresh  [q] Quit{search_info}"
+            " [↑/↓/j/k] Navigate  [Space] Select  [V] Select All  [dd] Delete  [s/f/n/u] Sort  [o] Open  [e] Edit  [/] Filter  [r] Refresh  [q] Quit{select_info}{search_info}"
         );
         let help = Paragraph::new(help_text)
             .style(Style::default().fg(Color::DarkGray))
