@@ -1,17 +1,18 @@
 # bookmark-check
 
-Chrome 북마크 URL 유효성 검사 CLI 도구.
+Chrome 북마크 URL 유효성 검사 TUI 도구.
 
 Chrome 북마크 파일을 읽어 각 URL에 HTTP HEAD 요청을
 동시에 보내고, 살아있는 북마크와 죽은 북마크를 리포트한다.
 
 ## 기능
 
-- Chrome 프로필 자동 탐색
-- 여러 프로필이 있을 경우 대화형 선택
+- Chrome 프로필 자동 탐색 및 TUI 선택
 - 동시 요청 수 설정 가능한 병렬 URL 검사
-- 색상이 적용된 테이블 형식 출력
-- valid/invalid 비율 프로그레스 바 요약
+- 실시간 진행률 표시
+- 결과 테이블 (valid: 초록, invalid: 빨강)
+- status 기준 정렬 토글
+- vim 스타일 키보드 탐색
 - macOS, Linux, Windows 지원
 
 ## 설치
@@ -23,21 +24,11 @@ cargo install --path .
 ## 사용법
 
 ```bash
-# 대화형 프로필 선택
+# TUI 프로필 선택 후 검사
 bookmark-check
-
-# 모든 프로필 한번에 검사
-bookmark-check --all
-
-# 프로필 이름 지정
-bookmark-check -p "Default"
-bookmark-check -p "Profile 2"
 
 # 북마크 파일 직접 지정
 bookmark-check -f /path/to/Bookmarks
-
-# 유효하지 않은 URL만 표시
-bookmark-check --invalid-only
 
 # 동시 요청 수, 타임아웃 설정
 bookmark-check -c 20 -t 5
@@ -48,35 +39,21 @@ bookmark-check -c 20 -t 5
 | 옵션 | 축약 | 기본값 | 설명 |
 |---|---|---|---|
 | `--file <FILE>` | `-f` | 자동 탐색 | 북마크 파일 경로 |
-| `--profile <PROFILE>` | `-p` | 대화형 선택 | 프로필 이름 또는 디렉토리명 |
-| `--all` | `-a` | false | 모든 프로필 검사 |
 | `--concurrency <N>` | `-c` | 10 | 동시 요청 수 |
 | `--timeout <SECS>` | `-t` | 3 | 요청 타임아웃(초) |
-| `--invalid-only` | | false | 유효하지 않은 URL만 표시 |
 
-## 출력 예시
+## 키 바인딩
 
-```text
-  Profile: Personal (Default)
-
-  #   STATUS            NAME                 URL
-  -----------------------------------------------
-  1   200 OK            Google               https://www.google.com
-  2   200 OK            GitHub               https://github.com
-  3   TIMEOUT           Old Service          http://dead-link.example.com
-  4   404 Not Found     Deleted Page         https://example.com/gone
-
-==================================================
-
-  [##############################] 120/150 valid
-
-  Total    150
-  Valid    120
-  Invalid   30
-```
-
-- **초록색**: 유효 (HTTP 200-399)
-- **빨간색**: 무효 (HTTP 400+, 타임아웃, 연결 오류)
+| 키 | 동작 |
+|---|---|
+| `↑` / `k` | 위로 이동 |
+| `↓` / `j` | 아래로 이동 |
+| `PgUp` / `Ctrl+u` | 페이지 위로 |
+| `PgDn` / `Ctrl+d` | 페이지 아래로 |
+| `g` | 맨 위로 |
+| `G` | 맨 아래로 |
+| `s` | status 기준 정렬 토글 |
+| `q` / `Esc` | 종료 |
 
 ## 종료 코드
 
