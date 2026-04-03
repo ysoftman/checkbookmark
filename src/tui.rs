@@ -41,6 +41,7 @@ pub struct App {
     pub edit_field: EditField,
     pub edit_name: String,
     pub edit_url: String,
+    pub edit_cursor: usize,
     pub edit_original_url: String,
 }
 
@@ -94,6 +95,7 @@ impl App {
             edit_field: EditField::Name,
             edit_name: String::new(),
             edit_url: String::new(),
+            edit_cursor: 0,
             edit_original_url: String::new(),
         }
     }
@@ -303,6 +305,29 @@ impl App {
         false
     }
 
+    fn edit_buf(&self) -> &str {
+        match self.edit_field {
+            EditField::Name => &self.edit_name,
+            EditField::Url => &self.edit_url,
+        }
+    }
+
+    fn edit_buf_mut(&mut self) -> &mut String {
+        match self.edit_field {
+            EditField::Name => &mut self.edit_name,
+            EditField::Url => &mut self.edit_url,
+        }
+    }
+
+    /// 커서 위치(문자 인덱스)를 바이트 오프셋으로 변환
+    fn cursor_byte_offset(&self) -> usize {
+        let buf = self.edit_buf();
+        buf.char_indices()
+            .nth(self.edit_cursor)
+            .map(|(i, _)| i)
+            .unwrap_or(buf.len())
+    }
+
     fn handle_edit_key(&mut self, key: &crossterm::event::KeyEvent) -> bool {
         match key.code {
             KeyCode::Esc => {
@@ -313,24 +338,58 @@ impl App {
                     EditField::Name => EditField::Url,
                     EditField::Url => EditField::Name,
                 };
+                let len = self.edit_buf().chars().count();
+                self.edit_cursor = len;
             }
             KeyCode::Enter => {
                 self.save_edit();
                 self.edit_mode = false;
             }
+            KeyCode::Left => {
+                self.edit_cursor = self.edit_cursor.saturating_sub(1);
+            }
+            KeyCode::Right => {
+                let len = self.edit_buf().chars().count();
+                if self.edit_cursor < len {
+                    self.edit_cursor += 1;
+                }
+            }
+            KeyCode::Home => {
+                self.edit_cursor = 0;
+            }
+            KeyCode::End => {
+                self.edit_cursor = self.edit_buf().chars().count();
+            }
             KeyCode::Backspace => {
-                let buf = match self.edit_field {
-                    EditField::Name => &mut self.edit_name,
-                    EditField::Url => &mut self.edit_url,
-                };
-                buf.pop();
+                if self.edit_cursor > 0 {
+                    let offset = self.cursor_byte_offset();
+                    let prev_char_len = self.edit_buf()[..offset]
+                        .chars()
+                        .last()
+                        .map(|c| c.len_utf8())
+                        .unwrap_or(0);
+                    self.edit_buf_mut()
+                        .replace_range((offset - prev_char_len)..offset, "");
+                    self.edit_cursor -= 1;
+                }
+            }
+            KeyCode::Delete => {
+                let len = self.edit_buf().chars().count();
+                if self.edit_cursor < len {
+                    let offset = self.cursor_byte_offset();
+                    let char_len = self.edit_buf()[offset..]
+                        .chars()
+                        .next()
+                        .map(|c| c.len_utf8())
+                        .unwrap_or(0);
+                    self.edit_buf_mut()
+                        .replace_range(offset..(offset + char_len), "");
+                }
             }
             KeyCode::Char(c) => {
-                let buf = match self.edit_field {
-                    EditField::Name => &mut self.edit_name,
-                    EditField::Url => &mut self.edit_url,
-                };
-                buf.push(c);
+                let offset = self.cursor_byte_offset();
+                self.edit_buf_mut().insert(offset, c);
+                self.edit_cursor += 1;
             }
             _ => {}
         }
@@ -345,6 +404,7 @@ impl App {
         let results = self.sorted_results();
         let entry = results.get(idx).map(|r| (r.name.clone(), r.url.clone()));
         if let Some((name, url)) = entry {
+            self.edit_cursor = name.chars().count();
             self.edit_name = name;
             self.edit_url = url.clone();
             self.edit_original_url = url;
@@ -727,17 +787,13 @@ fn render_app(f: &mut Frame, app: &mut App) {
         f.render_widget(hint, edit_chunks[2]);
 
         // 활성 필드에 커서 표시
-        let (cursor_area, text_width) = match app.edit_field {
-            EditField::Name => (
-                edit_chunks[0],
-                UnicodeWidthStr::width(app.edit_name.as_str()) as u16,
-            ),
-            EditField::Url => (
-                edit_chunks[1],
-                UnicodeWidthStr::width(app.edit_url.as_str()) as u16,
-            ),
+        let (cursor_area, buf) = match app.edit_field {
+            EditField::Name => (edit_chunks[0], app.edit_name.as_str()),
+            EditField::Url => (edit_chunks[1], app.edit_url.as_str()),
         };
-        let cursor_x = cursor_area.x + 1 + text_width;
+        // 커서 위치까지의 표시 너비를 계산
+        let prefix: String = buf.chars().take(app.edit_cursor).collect();
+        let cursor_x = cursor_area.x + 1 + UnicodeWidthStr::width(prefix.as_str()) as u16;
         let cursor_y = cursor_area.y + 1;
         f.set_cursor_position((cursor_x, cursor_y));
     }
