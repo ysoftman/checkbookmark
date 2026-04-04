@@ -661,7 +661,10 @@ pub fn run_profile_selector(profiles: &[ProfileInfo]) -> io::Result<Option<usize
             )
             .block(
                 Block::default()
-                    .title(" Chrome Profiles ")
+                    .title(format!(
+                        " cbm v{} | Chrome Profiles ",
+                        env!("CARGO_PKG_VERSION")
+                    ))
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::Cyan)),
             )
@@ -720,11 +723,12 @@ fn render_app(f: &mut Frame, app: &mut App) {
         "Concurrency: {}  Timeout: {}s",
         app.concurrency, app.timeout
     );
+    let version = env!("CARGO_PKG_VERSION");
     let header_spans: Vec<Span> = if app.checking_done {
         let valid = app.total - app.invalid;
         vec![
             Span::raw(format!(
-                " Profile: {}  |  Total: {}  ",
+                " cbm v{version}  |  Profile: {}  |  Total: {}  ",
                 app.profile_name, app.total
             )),
             Span::styled(format!("Valid: {valid}"), Style::default().fg(Color::Green)),
@@ -737,7 +741,7 @@ fn render_app(f: &mut Frame, app: &mut App) {
         ]
     } else {
         vec![Span::raw(format!(
-            " Profile: {}  |  Checking: {}/{}  |  {}",
+            " cbm v{version}  |  Profile: {}  |  Checking: {}/{}  |  {}",
             app.profile_name, app.checked, app.total, settings
         ))]
     };
