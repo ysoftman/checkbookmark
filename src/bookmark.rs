@@ -1,5 +1,6 @@
 use std::io;
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 use md5::{Digest, Md5};
 use serde::Deserialize;
@@ -251,11 +252,34 @@ fn compute_checksum(roots: &serde_json::Value) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// 현재 시간을 Chrome 타임스탬프(1601-01-01 기준 마이크로초)로 변환
+fn chrome_timestamp_now() -> String {
+    // Windows epoch (1601-01-01) ~ Unix epoch (1970-01-01) 차이: 11644473600초
+    const WINDOWS_EPOCH_DELTA: u64 = 11_644_473_600;
+    let unix_secs = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros() as u64;
+    let chrome_ts = unix_secs + WINDOWS_EPOCH_DELTA * 1_000_000;
+    chrome_ts.to_string()
+}
+
+/// 노드의 date_modified를 현재 시간으로 업데이트
+fn touch_date_modified(node: &mut serde_json::Value) {
+    if node.get("type").and_then(|t| t.as_str()) == Some("folder") {
+        node["date_modified"] = serde_json::Value::String(chrome_timestamp_now());
+    }
+}
+
 /// JSON 값에 checksum을 업데이트하고 파일에 저장
 fn save_bookmarks(path: &PathBuf, value: &mut serde_json::Value) -> io::Result<()> {
     if let Some(roots) = value.get("roots") {
         let checksum = compute_checksum(roots);
         value["checksum"] = serde_json::Value::String(checksum);
+    }
+    // Chrome이 sync_metadata 기준으로 북마크를 복원하지 않도록 제거
+    if let Some(obj) = value.as_object_mut() {
+        obj.remove("sync_metadata");
     }
     let output = serde_json::to_string_pretty(value)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -264,6 +288,13 @@ fn save_bookmarks(path: &PathBuf, value: &mut serde_json::Value) -> io::Result<(
     let bak = path.with_extension("bak");
     if bak.exists() {
         let _ = std::fs::remove_file(&bak);
+    }
+    // Chrome이 Sync LevelDB 기준으로 북마크를 복원하지 않도록 삭제
+    if let Some(profile_dir) = path.parent() {
+        let sync_db = profile_dir.join("Sync Data").join("LevelDB");
+        if sync_db.is_dir() {
+            let _ = std::fs::remove_dir_all(&sync_db);
+        }
     }
     Ok(())
 }
@@ -302,10 +333,38 @@ pub fn update_bookmarks_file(
         false
     }
 
+    fn update_node_and_touch_parent(
+        node: &mut serde_json::Value,
+        original_url: &str,
+        new_name: &str,
+        new_url: &str,
+    ) -> bool {
+        if let Some(children) = node.get("children").and_then(|c| c.as_array()) {
+            let found = children.iter().any(|child| {
+                child.get("type").and_then(|t| t.as_str()) == Some("url")
+                    && child.get("url").and_then(|u| u.as_str()) == Some(original_url)
+            });
+            if found {
+                update_node(node, original_url, new_name, new_url);
+                touch_date_modified(node);
+                return true;
+            }
+        }
+        if let Some(children) = node.get_mut("children").and_then(|c| c.as_array_mut()) {
+            for child in children {
+                if update_node_and_touch_parent(child, original_url, new_name, new_url) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     if let Some(roots) = value.get_mut("roots") {
         for key in &["bookmark_bar", "other", "synced"] {
             if let Some(root) = roots.get_mut(*key) {
-                if update_node(root, original_url, new_name, new_url) {
+                if update_node_and_touch_parent(root, original_url, new_name, new_url) {
+                    touch_date_modified(root);
                     break;
                 }
             }
@@ -329,6 +388,7 @@ pub fn delete_bookmark_from_file(path: &PathBuf, target_url: &str) -> io::Result
                     && child.get("url").and_then(|u| u.as_str()) == Some(target_url))
             });
             if children.len() < before {
+                touch_date_modified(node);
                 return true;
             }
             for child in children {
@@ -344,6 +404,7 @@ pub fn delete_bookmark_from_file(path: &PathBuf, target_url: &str) -> io::Result
         for key in &["bookmark_bar", "other", "synced"] {
             if let Some(root) = roots.get_mut(*key) {
                 if remove_node(root, target_url) {
+                    touch_date_modified(root);
                     break;
                 }
             }
@@ -380,7 +441,10 @@ pub fn delete_empty_folder_from_file(
                             .and_then(|c| c.as_array())
                             .is_some_and(|c| c.is_empty()))
                 });
-                return children.len() < before;
+                if children.len() < before {
+                    touch_date_modified(node);
+                    return true;
+                }
             }
             return false;
         }
@@ -442,7 +506,9 @@ pub fn move_bookmark_to_folder(
                     && child.get("url").and_then(|u| u.as_str()) == Some(target_url)
             });
             if let Some(idx) = pos {
-                return Some(children.remove(idx));
+                let captured = children.remove(idx);
+                touch_date_modified(node);
+                return Some(captured);
             }
             for child in children.iter_mut() {
                 if let Some(captured) = remove_and_capture(child, target_url) {
@@ -543,6 +609,7 @@ pub fn move_bookmark_to_folder(
         {
             children.push(bookmark_node);
         }
+        touch_date_modified(target_folder);
     }
 
     save_bookmarks(path, &mut value)
