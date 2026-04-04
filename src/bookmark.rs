@@ -659,15 +659,7 @@ pub fn export_bookmarks_html(path: &PathBuf) -> io::Result<PathBuf> {
     html.push_str("<DL><p>\n");
 
     if let Some(roots) = value.get("roots") {
-        // bookmark_bar는 폴더 래퍼 없이 자식만 출력
-        if let Some(bar) = roots.get("bookmark_bar") {
-            if let Some(children) = bar.get("children").and_then(|c| c.as_array()) {
-                for child in children {
-                    write_html_node(&mut html, child, 1);
-                }
-            }
-        }
-        for key in &["other", "synced"] {
+        for key in &["bookmark_bar", "other", "synced"] {
             if let Some(root) = roots.get(*key) {
                 write_html_node(&mut html, root, 1);
             }
