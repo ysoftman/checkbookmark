@@ -328,17 +328,41 @@ fn save_bookmarks(path: &PathBuf, value: &mut serde_json::Value) -> io::Result<(
     }
     let output = serde_json::to_string_pretty(value)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    std::fs::write(path, output)?;
-    // Chrome이 .bak에서 복원하지 않도록 삭제
-    let bak = path.with_extension("bak");
-    if bak.exists() {
-        let _ = std::fs::remove_file(&bak);
+    std::fs::write(path, &output)?;
+    // AccountBookmarks와 Bookmarks 양쪽에 동일 내용 저장
+    if let Some(parent) = path.parent() {
+        let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+        let counterpart = if file_name == "AccountBookmarks" {
+            Some(parent.join("Bookmarks"))
+        } else if file_name == "Bookmarks" {
+            Some(parent.join("AccountBookmarks"))
+        } else {
+            None
+        };
+        if let Some(other) = counterpart {
+            let _ = std::fs::write(&other, &output);
+        }
     }
-    // Chrome이 Sync LevelDB 기준으로 북마크를 복원하지 않도록 삭제
+    // Chrome이 .bak에서 복원하지 않도록 삭제
+    if let Some(parent) = path.parent() {
+        for name in &["Bookmarks.bak", "AccountBookmarks.bak"] {
+            let bak = parent.join(name);
+            if bak.exists() {
+                let _ = std::fs::remove_file(&bak);
+            }
+        }
+    }
+    // Chrome이 동기화 데이터 기준으로 북마크를 복원하지 않도록 삭제
     if let Some(profile_dir) = path.parent() {
-        let sync_db = profile_dir.join("Sync Data").join("LevelDB");
-        if sync_db.is_dir() {
-            let _ = std::fs::remove_dir_all(&sync_db);
+        // Sync Data 디렉토리 전체 삭제
+        let sync_data = profile_dir.join("Sync Data");
+        if sync_data.is_dir() {
+            let _ = std::fs::remove_dir_all(&sync_data);
+        }
+        // Sync Data Backup 디렉토리도 삭제
+        let sync_backup = profile_dir.join("Sync Data Backup");
+        if sync_backup.is_dir() {
+            let _ = std::fs::remove_dir_all(&sync_backup);
         }
     }
     Ok(())
