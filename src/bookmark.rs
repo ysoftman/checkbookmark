@@ -1,6 +1,7 @@
 use std::io;
 use std::path::PathBuf;
 
+use md5::{Digest, Md5};
 use serde::Deserialize;
 
 /// Chrome 북마크 JSON 최상위 구조
@@ -195,6 +196,63 @@ pub async fn check_url(client: &reqwest::Client, url: &str) -> (u16, String) {
     }
 }
 
+/// Chrome 북마크 checksum 계산 (Chromium bookmark_codec.cc 호환)
+/// 각 노드: id(UTF-8) + name(UTF-16LE) + type(UTF-8) + url(UTF-8, url 노드만)
+fn hash_node(hasher: &mut Md5, node: &serde_json::Value) {
+    // id: UTF-8
+    if let Some(id) = node.get("id").and_then(|v| v.as_str()) {
+        hasher.update(id.as_bytes());
+    }
+    // name/title: UTF-16LE raw bytes
+    if let Some(name) = node.get("name").and_then(|v| v.as_str()) {
+        for ch in name.encode_utf16() {
+            hasher.update(ch.to_le_bytes());
+        }
+    }
+    // type: UTF-8
+    let node_type = node.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    hasher.update(node_type.as_bytes());
+    match node_type {
+        "url" => {
+            // url: UTF-8
+            if let Some(url) = node.get("url").and_then(|v| v.as_str()) {
+                hasher.update(url.as_bytes());
+            }
+        }
+        "folder" => {
+            if let Some(children) = node.get("children").and_then(|v| v.as_array()) {
+                for child in children {
+                    hash_node(hasher, child);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// roots 객체로부터 Chrome 호환 checksum 문자열 계산
+fn compute_checksum(roots: &serde_json::Value) -> String {
+    let mut hasher = Md5::new();
+    for key in &["bookmark_bar", "other", "synced"] {
+        if let Some(root) = roots.get(*key) {
+            hash_node(&mut hasher, root);
+        }
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+/// JSON 값에 checksum을 업데이트하고 파일에 저장
+fn save_bookmarks(path: &PathBuf, value: &mut serde_json::Value) -> io::Result<()> {
+    if let Some(roots) = value.get("roots") {
+        let checksum = compute_checksum(roots);
+        value["checksum"] = serde_json::Value::String(checksum);
+    }
+    let output = serde_json::to_string_pretty(value)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    std::fs::write(path, output)?;
+    Ok(())
+}
+
 /// Bookmarks JSON 파일에서 URL로 항목을 찾아 name/url 업데이트
 pub fn update_bookmarks_file(
     path: &PathBuf,
@@ -239,10 +297,7 @@ pub fn update_bookmarks_file(
         }
     }
 
-    let output = serde_json::to_string_pretty(&value)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    std::fs::write(path, output)?;
-    Ok(())
+    save_bookmarks(path, &mut value)
 }
 
 /// Bookmarks JSON 파일에서 URL로 항목을 찾아 삭제
@@ -280,10 +335,7 @@ pub fn delete_bookmark_from_file(path: &PathBuf, target_url: &str) -> io::Result
         }
     }
 
-    let output = serde_json::to_string_pretty(&value)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    std::fs::write(path, output)?;
-    Ok(())
+    save_bookmarks(path, &mut value)
 }
 
 /// Bookmarks JSON에서 URL 항목을 다른 폴더로 이동
@@ -410,10 +462,34 @@ pub fn move_bookmark_to_folder(
         }
     }
 
-    let output = serde_json::to_string_pretty(&value)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    std::fs::write(path, output)?;
-    Ok(())
+    save_bookmarks(path, &mut value)
+}
+
+/// Chrome 프로세스 실행 여부 확인
+pub fn is_chrome_running() -> bool {
+    let output = if cfg!(target_os = "macos") {
+        std::process::Command::new("pgrep")
+            .args(["-x", "Google Chrome"])
+            .output()
+    } else if cfg!(target_os = "linux") {
+        std::process::Command::new("pgrep")
+            .args(["-x", "chrome"])
+            .output()
+    } else {
+        std::process::Command::new("tasklist")
+            .args(["/FI", "IMAGENAME eq chrome.exe", "/NH"])
+            .output()
+    };
+    match output {
+        Ok(o) => {
+            if cfg!(target_os = "windows") {
+                String::from_utf8_lossy(&o.stdout).contains("chrome.exe")
+            } else {
+                o.status.success()
+            }
+        }
+        Err(_) => false,
+    }
 }
 
 /// OS별 기본 브라우저로 URL 열기

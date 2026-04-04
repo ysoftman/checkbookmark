@@ -47,6 +47,7 @@ pub struct App {
     pub edit_original_url: String,
     pub edit_original_folder: String,
     pub selected_urls: HashSet<String>,
+    pub chrome_warning: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -105,6 +106,7 @@ impl App {
             edit_original_url: String::new(),
             edit_original_folder: String::new(),
             selected_urls: HashSet::new(),
+            chrome_warning: false,
         }
     }
 
@@ -220,6 +222,11 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: &crossterm::event::KeyEvent) -> bool {
+        // Chrome 실행 경고
+        if self.chrome_warning {
+            self.chrome_warning = false;
+            return false;
+        }
         // 삭제 확인 모드
         if self.confirm_delete {
             match key.code {
@@ -417,6 +424,10 @@ impl App {
     }
 
     fn enter_edit_mode(&mut self) {
+        if is_chrome_running() {
+            self.chrome_warning = true;
+            return;
+        }
         let idx = match self.table_state.selected() {
             Some(i) => i,
             None => return,
@@ -493,6 +504,10 @@ impl App {
     }
 
     fn confirm_delete_selected(&mut self) {
+        if is_chrome_running() {
+            self.chrome_warning = true;
+            return;
+        }
         if !self.selected_urls.is_empty() {
             self.delete_target_url = format!("{} bookmarks selected", self.selected_urls.len());
             self.confirm_delete = true;
@@ -930,11 +945,7 @@ fn render_app(f: &mut Frame, app: &mut App) {
             );
         f.render_widget(url_input, edit_chunks[2]);
 
-        let mut hint_spans = styled_hint(" [Tab] Switch field  [Enter] Save  [Esc] Cancel  ");
-        hint_spans.push(Span::styled(
-            "⚠ Close Chrome before editing to prevent sync overwrite",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        ));
+        let hint_spans = styled_hint(" [Tab] Switch field  [Enter] Save  [Esc] Cancel  ");
         let hint = Paragraph::new(Line::from(hint_spans)).block(
             Block::default()
                 .borders(Borders::ALL)
@@ -982,17 +993,47 @@ fn render_app(f: &mut Frame, app: &mut App) {
             );
         f.render_widget(msg, confirm_chunks[0]);
 
-        let mut hint_spans = styled_hint(" [y] Yes  [any other key] Cancel  ");
-        hint_spans.push(Span::styled(
-            "⚠ Close Chrome before deleting to prevent sync overwrite",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        ));
+        let hint_spans = styled_hint(" [y] Yes  [any other key] Cancel  ");
         let hint = Paragraph::new(Line::from(hint_spans)).block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Gray)),
         );
         f.render_widget(hint, confirm_chunks[1]);
+    }
+
+    // Chrome 실행 경고 팝업
+    if app.chrome_warning {
+        let popup_area = centered_rect(55, 5, area);
+        let clear_area = Rect::new(
+            popup_area.x.saturating_sub(1),
+            popup_area.y,
+            (popup_area.width + 2).min(area.width.saturating_sub(popup_area.x.saturating_sub(1))),
+            popup_area.height,
+        );
+        f.render_widget(Clear, clear_area);
+
+        let warn_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Length(2)])
+            .split(popup_area);
+
+        let msg = Paragraph::new(" Chrome is running. Close Chrome before editing bookmarks.")
+            .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+            .block(
+                Block::default()
+                    .title(" ⚠ Chrome Running ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Red)),
+            );
+        f.render_widget(msg, warn_chunks[0]);
+
+        let hint = Paragraph::new(Line::from(styled_hint(" [any key] Close  "))).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Gray)),
+        );
+        f.render_widget(hint, warn_chunks[1]);
     }
 
     // 하단: 검색 모드 또는 도움말
