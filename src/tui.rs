@@ -804,7 +804,10 @@ fn render_app(f: &mut Frame, app: &mut App) {
         .enumerate()
         .map(|(i, r)| {
             let is_selected = app.selected_urls.contains(&r.url);
-            let status_style = if r.is_valid {
+            let is_empty_folder = r.url.starts_with("folder://");
+            let status_style = if is_empty_folder {
+                Style::default().fg(Color::DarkGray)
+            } else if r.is_valid {
                 Style::default().fg(Color::Green)
             } else {
                 Style::default().fg(Color::Yellow)
@@ -814,12 +817,17 @@ fn render_app(f: &mut Frame, app: &mut App) {
             } else {
                 format!("{}", i + 1)
             };
+            let display_url = if is_empty_folder {
+                "(empty folder)"
+            } else {
+                r.url.as_str()
+            };
             let row = Row::new(vec![
                 Cell::from(row_num),
                 Cell::from(r.status.as_str()).style(status_style),
                 Cell::from(r.folder.as_str()),
                 Cell::from(r.name.as_str()),
-                Cell::from(r.url.as_str()),
+                Cell::from(display_url),
             ]);
             if is_selected {
                 row.style(Style::default().fg(Color::Magenta))
@@ -995,10 +1003,11 @@ fn render_app(f: &mut Frame, app: &mut App) {
             .split(popup_area);
 
         let msg = Paragraph::new(format!(" Delete: {}", app.delete_target_url))
-            .style(Style::default().fg(Color::Red))
+            .style(Style::default().fg(Color::Yellow))
             .block(
                 Block::default()
                     .title(" Confirm Delete ")
+                    .title_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::Red)),
             );
@@ -1079,9 +1088,15 @@ fn render_app(f: &mut Frame, app: &mut App) {
         } else {
             String::new()
         };
-        let help_text = format!(
-            " [↑/↓/j/k] Navigate  [Space] Select  [V] Select All  [dd] Delete  [s/f/n/u] Sort  [o] Open  [e] Edit  [/] Filter  [r] Refresh  [q] Quit{select_info}{search_info}"
-        );
+        let help_text = if area.width < 100 {
+            format!(
+                " [j/k] Nav  [Space] Sel  [dd] Del  [s/f/n/u] Sort  [o] Open  [e] Edit  [/] Filter  [q] Quit{select_info}{search_info}"
+            )
+        } else {
+            format!(
+                " [↑/↓/j/k] Navigate  [Space] Select  [V] Select All  [dd] Delete  [s/f/n/u] Sort  [o] Open  [e] Edit  [/] Filter  [r] Refresh  [q] Quit{select_info}{search_info}"
+            )
+        };
         let help = Paragraph::new(Line::from(styled_hint(&help_text)))
             .block(Block::default().borders(Borders::ALL));
         f.render_widget(help, chunks[2]);
