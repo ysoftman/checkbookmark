@@ -10,13 +10,18 @@ Chrome 북마크 파일을 읽어 각 URL에 HTTP HEAD 요청을 동시에 보�
 ## 기능
 
 - Chrome 프로필 자동 탐색 및 TUI 선택
+- AccountBookmarks → Bookmarks → Bookmarks.bak 우선순위 폴백
+- 헤더에 사용 중인 소스 파일 표시
 - 동시 요청 수 설정 가능한 병렬 URL 검사
 - 실시간 진행률 표시
 - 결과 테이블 (valid: 초록, invalid: 노랑)
 - 폴더 경로 표시
+- 빈 폴더 자동 감지 및 관리
 - status/folder/name/url 기준 정렬 (오름차순/내림차순 토글)
 - 실시간 검색 필터
+- Space/V 키로 개별/전체 선택 후 일괄 삭제
 - 북마크 편집/삭제 (Chrome Bookmarks 파일에 직접 반영)
+- 변경 후 Chrome 호환 HTML 파일 자동 내보내기
 - 선택 URL 브라우저 열기
 - 전체 재검사 (refresh)
 - vim 스타일 키보드 탐색
@@ -65,16 +70,20 @@ checkbookmark -c 20 -t 5
 | `u` | url 정렬 (반복: 오름/내림차순) |
 | `/` | 검색 필터 (name/url/status/folder) |
 | `Esc` | 검색 필터 해제 / 팝업 취소 |
+| `Space` | 현재 행 선택/해제 |
+| `V` | 보이는 행 전체 선택/해제 |
 | `o` | 선택 URL 브라우저 열기 |
 | `e` | 선택 항목 편집 |
-| `dd` | 선택 항목 삭제 (확인 팝업) |
+| `dd` | 선택 항목 삭제 (확인 팝업, 다중 선택 지원) |
 | `r` | 전체 재검사 |
 | `q` | 종료 |
 
 ## Chrome 북마크 경로
 
+AccountBookmarks → Bookmarks → Bookmarks.bak 순서로 유효한 파일을 탐색한다.
+
 | OS | 경로 |
 |---|---|
-| macOS | `~/Library/Application Support/Google/Chrome/{Profile}/Bookmarks` |
-| Linux | `~/.config/google-chrome/{Profile}/Bookmarks` |
-| Windows | `%LOCALAPPDATA%\Google\Chrome\User Data\{Profile}\Bookmarks` |
+| macOS | `~/Library/Application Support/Google/Chrome/{Profile}/AccountBookmarks` |
+| Linux | `~/.config/google-chrome/{Profile}/AccountBookmarks` |
+| Windows | `%LOCALAPPDATA%\Google\Chrome\User Data\{Profile}\AccountBookmarks` |

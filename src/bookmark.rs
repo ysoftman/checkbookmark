@@ -144,10 +144,18 @@ pub fn discover_profiles() -> Vec<ProfileInfo> {
             })
             .unwrap_or_else(|| dir_name.clone());
 
+        let primary_path = if account_bookmarks.exists() {
+            account_bookmarks
+        } else if bookmarks_path.exists() {
+            bookmarks_path
+        } else {
+            bookmarks_bak
+        };
+
         profiles.push(ProfileInfo {
             dir_name,
             display_name,
-            bookmarks_path,
+            bookmarks_path: primary_path,
         });
     }
 
