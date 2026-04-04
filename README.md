@@ -5,6 +5,8 @@ Chrome 북마크 URL 유효성 검사 TUI 도구.
 Chrome 북마크 파일을 읽어 각 URL에 HTTP HEAD 요청을 동시에 보내고,
 살아있는 북마크와 죽은 북마크를 리포트하고 편집한다.
 
+![screenshot](screenshot.png)
+
 ## 기능
 
 - Chrome 프로필 자동 탐색 및 TUI 선택

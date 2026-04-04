@@ -728,7 +728,7 @@ fn render_app(f: &mut Frame, app: &mut App) {
         let valid = app.total - app.invalid;
         vec![
             Span::raw(format!(
-                " checkbookmark v{version}  |  Profile: {}  |  Total: {}",
+                " checkbookmark v{version}  |  Profile: {}  |  Total: {}  ",
                 app.profile_name, app.total
             )),
             Span::styled(format!("Valid: {valid}"), Style::default().fg(Color::Green)),
