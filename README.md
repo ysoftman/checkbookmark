@@ -1,4 +1,4 @@
-# cbm
+# checkbookmark
 
 Chrome 북마크 URL 유효성 검사 TUI 도구.
 
@@ -30,13 +30,13 @@ cargo install --path .
 
 ```bash
 # TUI 프로필 선택 후 검사
-cbm
+checkbookmark
 
 # 북마크 파일 직접 지정
-cbm -f /path/to/Bookmarks
+checkbookmark -f /path/to/Bookmarks
 
 # 동시 요청 수, 타임아웃 설정
-cbm -c 20 -t 5
+checkbookmark -c 20 -t 5
 ```
 
 ## 옵션

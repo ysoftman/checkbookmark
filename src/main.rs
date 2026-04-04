@@ -12,7 +12,7 @@ use tui::{App, run_check_tui, run_profile_selector};
 
 /// CLI 인자 정의
 #[derive(Parser)]
-#[command(name = "cbm", about = "Check Chrome bookmarks URL validity")]
+#[command(name = "checkbookmark", about = "Check Chrome bookmarks URL validity")]
 struct Cli {
     /// Chrome 북마크 파일 경로
     #[arg(short, long)]
