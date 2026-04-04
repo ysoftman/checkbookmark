@@ -69,7 +69,8 @@ async fn main() {
     };
 
     for (profile_name, path) in &bookmark_files {
-        if !path.exists() {
+        let bak_path = path.with_extension("bak");
+        if !path.exists() && !bak_path.exists() {
             eprintln!("ERROR: Bookmarks file not found: {}", path.display());
             continue;
         }

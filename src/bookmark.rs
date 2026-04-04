@@ -123,7 +123,8 @@ pub fn discover_profiles() -> Vec<ProfileInfo> {
         }
 
         let bookmarks_path = path.join("Bookmarks");
-        if !bookmarks_path.exists() {
+        let bookmarks_bak = path.join("Bookmarks.bak");
+        if !bookmarks_path.exists() && !bookmarks_bak.exists() {
             continue;
         }
 
@@ -163,17 +164,36 @@ impl PipeRead for PathBuf {
     }
 }
 
-/// 북마크 파일을 읽어 URL 항목 목록으로 파싱
+/// 북마크 파일을 읽어 URL 항목 목록으로 파싱 (비어있으면 .bak → Bookmarks로 rename 후 사용)
 pub fn parse_bookmarks(path: &PathBuf) -> Vec<BookmarkEntry> {
-    let content = std::fs::read_to_string(path).unwrap_or_else(|e| {
-        eprintln!("ERROR: Failed to read file: {e}");
-        std::process::exit(1);
-    });
+    let entries = parse_bookmarks_from(path);
+    if !entries.is_empty() {
+        return entries;
+    }
 
-    let bookmarks: Bookmarks = serde_json::from_str(&content).unwrap_or_else(|e| {
-        eprintln!("ERROR: Failed to parse bookmarks: {e}");
-        std::process::exit(1);
-    });
+    let bak = path.with_extension("bak");
+    if bak.exists() {
+        let bak_entries = parse_bookmarks_from(&bak);
+        if !bak_entries.is_empty() {
+            let _ = std::fs::rename(&bak, path);
+            return bak_entries;
+        }
+    }
+
+    entries
+}
+
+/// 지정된 경로의 북마크 파일을 파싱
+fn parse_bookmarks_from(path: &PathBuf) -> Vec<BookmarkEntry> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let bookmarks: Bookmarks = match serde_json::from_str(&content) {
+        Ok(b) => b,
+        Err(_) => return Vec::new(),
+    };
 
     let mut entries = Vec::new();
     collect_entries(&bookmarks.roots.bookmark_bar, "", &mut entries);
