@@ -48,6 +48,7 @@ pub struct App {
     pub edit_original_folder: String,
     pub selected_urls: HashSet<String>,
     pub chrome_warning: bool,
+    pub popup_message: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -107,6 +108,7 @@ impl App {
             edit_original_folder: String::new(),
             selected_urls: HashSet::new(),
             chrome_warning: false,
+            popup_message: None,
         }
     }
 
@@ -222,6 +224,11 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: &crossterm::event::KeyEvent) -> bool {
+        // 팝업 메시지 닫기
+        if self.popup_message.is_some() {
+            self.popup_message = None;
+            return false;
+        }
         // Chrome 실행 경고
         if self.chrome_warning {
             self.chrome_warning = false;
@@ -466,6 +473,8 @@ impl App {
         if original_folder != new_folder {
             let _ = move_bookmark_to_folder(&self.bookmarks_path, &new_url, &new_folder);
         }
+
+        self.export_html_popup();
     }
 
     fn toggle_select(&mut self) {
@@ -553,6 +562,8 @@ impl App {
         } else {
             self.table_state.select(None);
         }
+
+        self.export_html_popup();
     }
 
     fn delete_single_entry(&self, url: &str) {
@@ -563,6 +574,17 @@ impl App {
             }
         } else {
             let _ = delete_bookmark_from_file(&self.bookmarks_path, url);
+        }
+    }
+
+    fn export_html_popup(&mut self) {
+        match export_bookmarks_html(&self.bookmarks_path) {
+            Ok(path) => {
+                self.popup_message = Some(format!("Bookmark file exported: {}", path.display()));
+            }
+            Err(e) => {
+                self.popup_message = Some(format!("Export failed: {e}"));
+            }
         }
     }
 
@@ -1054,6 +1076,44 @@ fn render_app(f: &mut Frame, app: &mut App) {
                 .border_style(Style::default().fg(Color::Gray)),
         );
         f.render_widget(hint, warn_chunks[1]);
+    }
+
+    // 팝업 메시지
+    if let Some(msg) = &app.popup_message {
+        let popup_area = centered_rect(55, 5, area);
+        let clear_area = Rect::new(
+            popup_area.x.saturating_sub(1),
+            popup_area.y,
+            (popup_area.width + 2).min(area.width.saturating_sub(popup_area.x.saturating_sub(1))),
+            popup_area.height,
+        );
+        f.render_widget(Clear, clear_area);
+
+        let msg_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Length(2)])
+            .split(popup_area);
+
+        let text = Paragraph::new(format!(" {msg}"))
+            .style(
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .block(
+                Block::default()
+                    .title(" Export Complete ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Green)),
+            );
+        f.render_widget(text, msg_chunks[0]);
+
+        let hint = Paragraph::new(Line::from(styled_hint(" [any key] Close  "))).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Gray)),
+        );
+        f.render_widget(hint, msg_chunks[1]);
     }
 
     // 하단: 검색 모드 또는 도움말

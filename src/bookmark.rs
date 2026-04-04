@@ -642,6 +642,74 @@ pub fn is_chrome_running() -> bool {
     }
 }
 
+/// Bookmarks JSON 파일을 Chrome import용 HTML(Netscape Bookmark File Format)로 내보내기
+pub fn export_bookmarks_html(path: &PathBuf) -> io::Result<PathBuf> {
+    let content = std::fs::read_to_string(path)?;
+    let value: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    let mut html = String::new();
+    html.push_str("<!DOCTYPE NETSCAPE-Bookmark-file-1>\n");
+    html.push_str("<!-- This is an automatically generated file.\n");
+    html.push_str("     It will be read and overwritten.\n");
+    html.push_str("     DO NOT EDIT! -->\n");
+    html.push_str("<META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html; charset=UTF-8\">\n");
+    html.push_str("<TITLE>Bookmarks</TITLE>\n");
+    html.push_str("<H1>Bookmarks</H1>\n");
+    html.push_str("<DL><p>\n");
+
+    if let Some(roots) = value.get("roots") {
+        for key in &["bookmark_bar", "other", "synced"] {
+            if let Some(root) = roots.get(*key) {
+                write_html_node(&mut html, root, 1);
+            }
+        }
+    }
+
+    html.push_str("</DL><p>\n");
+
+    let output_path = path.with_extension("html");
+    std::fs::write(&output_path, &html)?;
+    Ok(output_path)
+}
+
+/// 북마크 노드를 HTML 형식으로 재귀 출력
+fn write_html_node(html: &mut String, node: &serde_json::Value, depth: usize) {
+    let indent = "    ".repeat(depth);
+    let node_type = node.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    let name = node
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("")
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;");
+
+    match node_type {
+        "folder" => {
+            html.push_str(&format!("{indent}<DT><H3>{name}</H3>\n"));
+            html.push_str(&format!("{indent}<DL><p>\n"));
+            if let Some(children) = node.get("children").and_then(|c| c.as_array()) {
+                for child in children {
+                    write_html_node(html, child, depth + 1);
+                }
+            }
+            html.push_str(&format!("{indent}</DL><p>\n"));
+        }
+        "url" => {
+            let url = node
+                .get("url")
+                .and_then(|u| u.as_str())
+                .unwrap_or("")
+                .replace('&', "&amp;")
+                .replace('"', "&quot;");
+            html.push_str(&format!("{indent}<DT><A HREF=\"{url}\">{name}</A>\n"));
+        }
+        _ => {}
+    }
+}
+
 /// OS별 기본 브라우저로 URL 열기
 pub fn open_url(url: &str) -> io::Result<()> {
     if cfg!(target_os = "macos") {
