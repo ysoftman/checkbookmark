@@ -260,6 +260,11 @@ fn save_bookmarks(path: &PathBuf, value: &mut serde_json::Value) -> io::Result<(
     let output = serde_json::to_string_pretty(value)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     std::fs::write(path, output)?;
+    // Chrome이 .bak에서 복원하지 않도록 삭제
+    let bak = path.with_extension("bak");
+    if bak.exists() {
+        let _ = std::fs::remove_file(&bak);
+    }
     Ok(())
 }
 
