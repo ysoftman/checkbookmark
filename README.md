@@ -78,6 +78,14 @@ checkbookmark -c 20 -t 5
 | `r` | 전체 재검사 |
 | `q` | 종료 |
 
+## 주의사항
+
+Chrome이 실행 중이거나 재시작하면 북마크 파일을
+직접 수정하더라도 sync에 의해 자동으로 원복된다.
+삭제/편집 후 생성되는 HTML 내보내기 파일을
+Chrome의 `chrome://bookmarks` > ⋮ > **북마크 가져오기**로
+import 해야 변경 사항이 반영된다.
+
 ## Chrome 북마크 경로
 
 AccountBookmarks → Bookmarks → Bookmarks.bak 순서로 유효한 파일을 탐색한다.
