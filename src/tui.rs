@@ -48,6 +48,7 @@ pub struct App {
     pub edit_original_folder: String,
     pub selected_urls: HashSet<String>,
     pub chrome_warning: bool,
+    pub show_full_help: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -107,6 +108,7 @@ impl App {
             edit_original_folder: String::new(),
             selected_urls: HashSet::new(),
             chrome_warning: false,
+            show_full_help: false,
         }
     }
 
@@ -293,6 +295,7 @@ impl App {
                 self.search_query.clear();
             }
             KeyCode::Char('r') => self.request_refresh(),
+            KeyCode::Char('?') => self.show_full_help = !self.show_full_help,
             _ => {}
         }
         false
@@ -1088,13 +1091,13 @@ fn render_app(f: &mut Frame, app: &mut App) {
         } else {
             String::new()
         };
-        let help_text = if area.width < 100 {
+        let help_text = if app.show_full_help {
             format!(
-                " [j/k] Nav  [Space] Sel  [dd] Del  [s/f/n/u] Sort  [o] Open  [e] Edit  [/] Filter  [q] Quit{select_info}{search_info}"
+                " [↑/↓/j/k] Navigate  [Space] Select  [V] Select All  [dd] Delete  [s/f/n/u] Sort  [o] Open  [e] Edit  [/] Filter  [r] Refresh  [q] Quit  [?] Hide Help{select_info}{search_info}"
             )
         } else {
             format!(
-                " [↑/↓/j/k] Navigate  [Space] Select  [V] Select All  [dd] Delete  [s/f/n/u] Sort  [o] Open  [e] Edit  [/] Filter  [r] Refresh  [q] Quit{select_info}{search_info}"
+                " [j/k] Nav  [dd] Del  [/] Filter  [q] Quit  [?] Help{select_info}{search_info}"
             )
         };
         let help = Paragraph::new(Line::from(styled_hint(&help_text)))
