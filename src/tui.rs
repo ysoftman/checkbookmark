@@ -534,13 +534,13 @@ impl App {
         if !self.selected_urls.is_empty() {
             let urls: Vec<String> = self.selected_urls.drain().collect();
             for url in &urls {
-                let _ = delete_bookmark_from_file(&self.bookmarks_path, url);
+                self.delete_single_entry(url);
             }
             let url_set: HashSet<&String> = urls.iter().collect();
             self.results.retain(|r| !url_set.contains(&r.url));
             self.total = self.total.saturating_sub(urls.len());
         } else {
-            let _ = delete_bookmark_from_file(&self.bookmarks_path, &target);
+            self.delete_single_entry(&target);
             self.results.retain(|r| r.url != target);
             self.total = self.total.saturating_sub(1);
         }
@@ -552,6 +552,17 @@ impl App {
             }
         } else {
             self.table_state.select(None);
+        }
+    }
+
+    fn delete_single_entry(&self, url: &str) {
+        if url.starts_with("folder://") {
+            // 빈 폴더 삭제: url = "folder://parent/folder_name"
+            if let Some(r) = self.results.iter().find(|r| r.url == url) {
+                let _ = delete_empty_folder_from_file(&self.bookmarks_path, &r.folder, &r.name);
+            }
+        } else {
+            let _ = delete_bookmark_from_file(&self.bookmarks_path, url);
         }
     }
 
@@ -1092,8 +1103,12 @@ fn spawn_check_task(
                 let app = app.clone();
                 let checked = checked_count.clone();
                 async move {
-                    let (status_code, status_text) = check_url(&client, &entry.url).await;
-                    let is_valid = (200..400).contains(&status_code);
+                    let (status_text, is_valid) = if entry.is_empty_folder {
+                        ("EMPTY_FOLDER".to_string(), false)
+                    } else {
+                        let (status_code, text) = check_url(&client, &entry.url).await;
+                        (text, (200..400).contains(&status_code))
+                    };
                     let done = checked.fetch_add(1, Ordering::Relaxed) + 1;
 
                     let result = CheckResult {

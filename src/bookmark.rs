@@ -37,6 +37,7 @@ pub struct BookmarkEntry {
     pub folder: String,
     pub name: String,
     pub url: String,
+    pub is_empty_folder: bool,
 }
 
 /// URL 검사 결과
@@ -56,8 +57,8 @@ pub struct ProfileInfo {
     pub bookmarks_path: PathBuf,
 }
 
-/// 북마크 노드를 재귀적으로 탐색하여 URL 항목을 수집
-fn collect_urls(node: &BookmarkNode, folder_path: &str, entries: &mut Vec<BookmarkEntry>) {
+/// 북마크 노드를 재귀적으로 탐색하여 URL 항목과 빈 폴더를 수집
+fn collect_entries(node: &BookmarkNode, folder_path: &str, entries: &mut Vec<BookmarkEntry>) {
     let current_path = if folder_path.is_empty() {
         node.name.clone()
     } else {
@@ -70,13 +71,22 @@ fn collect_urls(node: &BookmarkNode, folder_path: &str, entries: &mut Vec<Bookma
                 folder: folder_path.to_string(),
                 name: node.name.clone(),
                 url: url.clone(),
+                is_empty_folder: false,
             });
         }
     }
 
     if let Some(children) = &node.children {
+        if node.node_type == "folder" && children.is_empty() {
+            entries.push(BookmarkEntry {
+                folder: folder_path.to_string(),
+                name: node.name.clone(),
+                url: format!("folder://{current_path}"),
+                is_empty_folder: true,
+            });
+        }
         for child in children {
-            collect_urls(child, &current_path, entries);
+            collect_entries(child, &current_path, entries);
         }
     }
 }
@@ -165,9 +175,9 @@ pub fn parse_bookmarks(path: &PathBuf) -> Vec<BookmarkEntry> {
     });
 
     let mut entries = Vec::new();
-    collect_urls(&bookmarks.roots.bookmark_bar, "", &mut entries);
-    collect_urls(&bookmarks.roots.other, "", &mut entries);
-    collect_urls(&bookmarks.roots.synced, "", &mut entries);
+    collect_entries(&bookmarks.roots.bookmark_bar, "", &mut entries);
+    collect_entries(&bookmarks.roots.other, "", &mut entries);
+    collect_entries(&bookmarks.roots.synced, "", &mut entries);
     entries
 }
 
@@ -329,6 +339,74 @@ pub fn delete_bookmark_from_file(path: &PathBuf, target_url: &str) -> io::Result
         for key in &["bookmark_bar", "other", "synced"] {
             if let Some(root) = roots.get_mut(*key) {
                 if remove_node(root, target_url) {
+                    break;
+                }
+            }
+        }
+    }
+
+    save_bookmarks(path, &mut value)
+}
+
+/// Bookmarks JSON 파일에서 빈 폴더를 찾아 삭제
+pub fn delete_empty_folder_from_file(
+    path: &PathBuf,
+    parent_folder: &str,
+    folder_name: &str,
+) -> io::Result<()> {
+    let content = std::fs::read_to_string(path)?;
+    let mut value: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    /// 폴더 경로를 따라 내려가서 빈 폴더 제거
+    fn navigate_and_remove(
+        node: &mut serde_json::Value,
+        path_parts: &[&str],
+        target_name: &str,
+    ) -> bool {
+        if path_parts.is_empty() {
+            if let Some(children) = node.get_mut("children").and_then(|c| c.as_array_mut()) {
+                let before = children.len();
+                children.retain(|child| {
+                    !(child.get("type").and_then(|t| t.as_str()) == Some("folder")
+                        && child.get("name").and_then(|n| n.as_str()) == Some(target_name)
+                        && child
+                            .get("children")
+                            .and_then(|c| c.as_array())
+                            .is_some_and(|c| c.is_empty()))
+                });
+                return children.len() < before;
+            }
+            return false;
+        }
+        if let Some(children) = node.get_mut("children").and_then(|c| c.as_array_mut()) {
+            for child in children.iter_mut() {
+                if child.get("type").and_then(|t| t.as_str()) == Some("folder")
+                    && child.get("name").and_then(|n| n.as_str()) == Some(path_parts[0])
+                    && navigate_and_remove(child, &path_parts[1..], target_name)
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    // parent_folder: "Bookmarks Bar/sub" → ["Bookmarks Bar", "sub"]
+    let parts: Vec<&str> = parent_folder.split('/').filter(|s| !s.is_empty()).collect();
+
+    if let Some(roots) = value.get_mut("roots") {
+        for key in &["bookmark_bar", "other", "synced"] {
+            if let Some(root) = roots.get_mut(*key) {
+                let root_name = root
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or_default();
+                if !parts.is_empty() && parts[0] == root_name {
+                    if navigate_and_remove(root, &parts[1..], folder_name) {
+                        break;
+                    }
+                } else if parts.is_empty() && navigate_and_remove(root, &[], folder_name) {
                     break;
                 }
             }
