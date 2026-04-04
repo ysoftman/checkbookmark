@@ -122,9 +122,10 @@ pub fn discover_profiles() -> Vec<ProfileInfo> {
             continue;
         }
 
+        let account_bookmarks = path.join("AccountBookmarks");
         let bookmarks_path = path.join("Bookmarks");
         let bookmarks_bak = path.join("Bookmarks.bak");
-        if !bookmarks_path.exists() && !bookmarks_bak.exists() {
+        if !account_bookmarks.exists() && !bookmarks_path.exists() && !bookmarks_bak.exists() {
             continue;
         }
 
@@ -164,23 +165,39 @@ impl PipeRead for PathBuf {
     }
 }
 
-/// 북마크 파일을 읽어 URL 항목 목록으로 파싱 (비어있으면 .bak → Bookmarks로 rename 후 사용)
-pub fn parse_bookmarks(path: &PathBuf) -> Vec<BookmarkEntry> {
-    let entries = parse_bookmarks_from(path);
-    if !entries.is_empty() {
-        return entries;
-    }
-
-    let bak = path.with_extension("bak");
-    if bak.exists() {
-        let bak_entries = parse_bookmarks_from(&bak);
-        if !bak_entries.is_empty() {
-            let _ = std::fs::rename(&bak, path);
-            return bak_entries;
+/// AccountBookmarks → Bookmarks → Bookmarks.bak 순서로 유효한 파일 경로 반환
+pub fn resolve_bookmarks_path(path: &PathBuf) -> PathBuf {
+    // AccountBookmarks 우선
+    if let Some(parent) = path.parent() {
+        let account = parent.join("AccountBookmarks");
+        if account.exists() {
+            let entries = parse_bookmarks_from(&account);
+            if entries.iter().any(|e| !e.is_empty_folder) {
+                return account;
+            }
         }
     }
 
-    entries
+    // Bookmarks
+    let entries = parse_bookmarks_from(path);
+    if entries.iter().any(|e| !e.is_empty_folder) {
+        return path.clone();
+    }
+
+    // Bookmarks.bak
+    let bak = path.with_extension("bak");
+    if bak.exists() {
+        let bak_entries = parse_bookmarks_from(&bak);
+        if bak_entries.iter().any(|e| !e.is_empty_folder) {
+            return bak;
+        }
+    }
+
+    path.clone()
+}
+
+pub fn parse_bookmarks(path: &PathBuf) -> Vec<BookmarkEntry> {
+    parse_bookmarks_from(path)
 }
 
 /// 지정된 경로의 북마크 파일을 파싱

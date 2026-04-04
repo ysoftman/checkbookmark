@@ -766,17 +766,22 @@ fn render_app(f: &mut Frame, app: &mut App) {
         ])
         .split(area);
 
-    // 상단: 프로필 정보 + 설정값 + 진행률
+    // 상단: 프로필 정보 + 소스 파일 + 설정값 + 진행률
     let settings = format!(
         "Concurrency: {}  Timeout: {}s",
         app.concurrency, app.timeout
     );
     let version = env!("CARGO_PKG_VERSION");
+    let source_file = app
+        .bookmarks_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
     let header_spans: Vec<Span> = if app.checking_done {
         let valid = app.total - app.invalid;
         vec![
             Span::raw(format!(
-                " checkbookmark v{version}  |  Profile: {}  |  Total: {}  ",
+                " checkbookmark v{version}  |  Profile: {}  |  Source: {source_file}  |  Total: {}  ",
                 app.profile_name, app.total
             )),
             Span::styled(format!("Valid: {valid}"), Style::default().fg(Color::Green)),
@@ -789,7 +794,7 @@ fn render_app(f: &mut Frame, app: &mut App) {
         ]
     } else {
         vec![Span::raw(format!(
-            " checkbookmark v{version}  |  Profile: {}  |  Checking: {}/{}  |  {}",
+            " checkbookmark v{version}  |  Profile: {}  |  Source: {source_file}  |  Checking: {}/{}  |  {}",
             app.profile_name, app.checked, app.total, settings
         ))]
     };
@@ -1232,6 +1237,7 @@ pub async fn run_check_tui(
         {
             let mut locked = app.lock().unwrap();
             if locked.refresh_requested {
+                locked.bookmarks_path = resolve_bookmarks_path(&locked.bookmarks_path);
                 let fresh_entries = parse_bookmarks(&locked.bookmarks_path);
                 locked.total = fresh_entries.len();
                 locked.reset();

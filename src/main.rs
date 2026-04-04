@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use clap::Parser;
 
-use bookmark::{discover_profiles, parse_bookmarks};
+use bookmark::{discover_profiles, parse_bookmarks, resolve_bookmarks_path};
 use tui::{App, run_check_tui, run_profile_selector};
 
 /// CLI 인자 정의
@@ -75,14 +75,15 @@ async fn main() {
             continue;
         }
 
-        let entries = parse_bookmarks(path);
+        let actual_path = resolve_bookmarks_path(path);
+        let entries = parse_bookmarks(&actual_path);
         let total = entries.len();
         let app = Arc::new(Mutex::new(App::new(
             profile_name.clone(),
             total,
             cli.concurrency,
             cli.timeout,
-            path.clone(),
+            actual_path,
         )));
         if run_check_tui(app, entries, client.clone(), cli.concurrency)
             .await
