@@ -571,6 +571,33 @@ impl App {
     }
 }
 
+/// hint 텍스트에서 [] 안의 단축키는 LightRed, 나머지는 Gray로 스타일링
+fn styled_hint(text: &str) -> Vec<Span<'_>> {
+    let mut spans = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find('[') {
+        if start > 0 {
+            spans.push(Span::styled(
+                &rest[..start],
+                Style::default().fg(Color::Gray),
+            ));
+        }
+        if let Some(end) = rest[start..].find(']') {
+            spans.push(Span::styled(
+                &rest[start..start + end + 1],
+                Style::default().fg(Color::LightRed),
+            ));
+            rest = &rest[start + end + 1..];
+        } else {
+            break;
+        }
+    }
+    if !rest.is_empty() {
+        spans.push(Span::styled(rest, Style::default().fg(Color::Gray)));
+    }
+    spans
+}
+
 /// 중앙 팝업 영역 계산
 fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
     let popup_width = area.width * percent_x / 100;
@@ -642,9 +669,10 @@ pub fn run_profile_selector(profiles: &[ProfileInfo]) -> io::Result<Option<usize
 
             f.render_widget(table, chunks[0]);
 
-            let help = Paragraph::new(" [↑/↓/j/k] Navigate  [Enter] Select  [q] Quit")
-                .style(Style::default().fg(Color::DarkGray))
-                .block(Block::default().borders(Borders::ALL));
+            let help = Paragraph::new(Line::from(styled_hint(
+                " [↑/↓/j/k] Navigate  [Enter] Select  [q] Quit",
+            )))
+            .block(Block::default().borders(Borders::ALL));
             f.render_widget(help, chunks[1]);
         })?;
 
@@ -833,8 +861,15 @@ fn render_app(f: &mut Frame, app: &mut App) {
 
     // 편집 모드: 중앙에 팝업
     if app.edit_mode {
-        let popup_area = centered_rect(60, 10, area);
-        f.render_widget(Clear, popup_area);
+        let popup_area = centered_rect(60, 12, area);
+        // 2칸 문자(한글 등) 경계 깨짐 방지를 위해 좌우 1칸 넓게 Clear
+        let clear_area = Rect::new(
+            popup_area.x.saturating_sub(1),
+            popup_area.y,
+            (popup_area.width + 2).min(area.width.saturating_sub(popup_area.x.saturating_sub(1))),
+            popup_area.height,
+        );
+        f.render_widget(Clear, clear_area);
 
         let edit_chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -842,7 +877,7 @@ fn render_app(f: &mut Frame, app: &mut App) {
                 Constraint::Length(3),
                 Constraint::Length(3),
                 Constraint::Length(3),
-                Constraint::Length(1),
+                Constraint::Length(3),
             ])
             .split(popup_area);
 
@@ -891,16 +926,16 @@ fn render_app(f: &mut Frame, app: &mut App) {
             );
         f.render_widget(url_input, edit_chunks[2]);
 
-        let hint = Paragraph::new(Line::from(vec![
-            Span::styled(
-                " [Tab] Switch field  [Enter] Save  [Esc] Cancel  ",
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled(
-                "⚠ Close Chrome before editing to prevent sync overwrite",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ),
-        ]));
+        let mut hint_spans = styled_hint(" [Tab] Switch field  [Enter] Save  [Esc] Cancel  ");
+        hint_spans.push(Span::styled(
+            "⚠ Close Chrome before editing to prevent sync overwrite",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ));
+        let hint = Paragraph::new(Line::from(hint_spans)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Gray)),
+        );
         f.render_widget(hint, edit_chunks[3]);
 
         // 활성 필드에 커서 표시
@@ -918,12 +953,19 @@ fn render_app(f: &mut Frame, app: &mut App) {
 
     // 삭제 확인 팝업
     if app.confirm_delete {
-        let popup_area = centered_rect(50, 5, area);
-        f.render_widget(Clear, popup_area);
+        let popup_area = centered_rect(50, 6, area);
+        // 2칸 문자(한글 등) 경계 깨짐 방지를 위해 좌우 1칸 넓게 Clear
+        let clear_area = Rect::new(
+            popup_area.x.saturating_sub(1),
+            popup_area.y,
+            (popup_area.width + 2).min(area.width.saturating_sub(popup_area.x.saturating_sub(1))),
+            popup_area.height,
+        );
+        f.render_widget(Clear, clear_area);
 
         let confirm_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Length(2)])
+            .constraints([Constraint::Length(3), Constraint::Length(3)])
             .split(popup_area);
 
         let msg = Paragraph::new(format!(" Delete: {}", app.delete_target_url))
@@ -936,16 +978,16 @@ fn render_app(f: &mut Frame, app: &mut App) {
             );
         f.render_widget(msg, confirm_chunks[0]);
 
-        let hint = Paragraph::new(Line::from(vec![
-            Span::styled(
-                " [y] Yes  [any other key] Cancel  ",
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled(
-                "⚠ Close Chrome before deleting to prevent sync overwrite",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ),
-        ]));
+        let mut hint_spans = styled_hint(" [y] Yes  [any other key] Cancel  ");
+        hint_spans.push(Span::styled(
+            "⚠ Close Chrome before deleting to prevent sync overwrite",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ));
+        let hint = Paragraph::new(Line::from(hint_spans)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Gray)),
+        );
         f.render_widget(hint, confirm_chunks[1]);
     }
 
@@ -984,8 +1026,7 @@ fn render_app(f: &mut Frame, app: &mut App) {
         let help_text = format!(
             " [↑/↓/j/k] Navigate  [Space] Select  [V] Select All  [dd] Delete  [s/f/n/u] Sort  [o] Open  [e] Edit  [/] Filter  [r] Refresh  [q] Quit{select_info}{search_info}"
         );
-        let help = Paragraph::new(help_text)
-            .style(Style::default().fg(Color::DarkGray))
+        let help = Paragraph::new(Line::from(styled_hint(&help_text)))
             .block(Block::default().borders(Borders::ALL));
         f.render_widget(help, chunks[2]);
     }
