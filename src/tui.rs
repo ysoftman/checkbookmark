@@ -504,7 +504,22 @@ impl App {
     }
 
     fn confirm_delete_selected(&mut self) {
-        if is_chrome_running() {
+        // 빈 폴더만 삭제하는 경우 Chrome 실행 중에도 허용
+        let all_empty_folders = if !self.selected_urls.is_empty() {
+            self.selected_urls
+                .iter()
+                .all(|u| u.starts_with("folder://"))
+        } else {
+            let idx = match self.table_state.selected() {
+                Some(i) => i,
+                None => return,
+            };
+            self.sorted_results()
+                .get(idx)
+                .is_some_and(|r| r.url.starts_with("folder://"))
+        };
+
+        if !all_empty_folders && is_chrome_running() {
             self.chrome_warning = true;
             return;
         }
