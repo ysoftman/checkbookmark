@@ -727,22 +727,22 @@ pub fn run_profile_selector(profiles: &[ProfileInfo]) -> io::Result<Option<usize
             f.render_widget(help, chunks[1]);
         })?;
 
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+        {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            match key.code {
+                KeyCode::Char('q') => break None,
+                KeyCode::Up | KeyCode::Char('k') => {
+                    selected = selected.saturating_sub(1);
                 }
-                match key.code {
-                    KeyCode::Char('q') => break None,
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        selected = selected.saturating_sub(1);
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        selected = (selected + 1).min(profiles.len() - 1);
-                    }
-                    KeyCode::Enter => break Some(selected),
-                    _ => {}
+                KeyCode::Down | KeyCode::Char('j') => {
+                    selected = (selected + 1).min(profiles.len() - 1);
                 }
+                KeyCode::Enter => break Some(selected),
+                _ => {}
             }
         }
     };
@@ -1260,15 +1260,15 @@ pub async fn run_check_tui(
             terminal.draw(|f| render_app(f, &mut app))?;
         }
 
-        if event::poll(Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
-                let mut app = app.lock().unwrap();
-                if app.handle_key(&key) {
-                    break 'outer;
-                }
+        if event::poll(Duration::from_millis(50))?
+            && let Event::Key(key) = event::read()?
+        {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            let mut app = app.lock().unwrap();
+            if app.handle_key(&key) {
+                break 'outer;
             }
         }
 
@@ -1284,18 +1284,18 @@ pub async fn run_check_tui(
                     let mut locked = app.lock().unwrap();
                     terminal.draw(|f| render_app(f, &mut locked))?;
                 }
-                if event::poll(Duration::from_millis(100))? {
-                    if let Event::Key(key) = event::read()? {
-                        if key.kind != KeyEventKind::Press {
-                            continue;
-                        }
-                        let mut locked = app.lock().unwrap();
-                        if locked.handle_key(&key) {
-                            break 'outer;
-                        }
-                        if locked.refresh_requested {
-                            break; // 내부 루프 탈출 → 외부 루프에서 refresh 처리
-                        }
+                if event::poll(Duration::from_millis(100))?
+                    && let Event::Key(key) = event::read()?
+                {
+                    if key.kind != KeyEventKind::Press {
+                        continue;
+                    }
+                    let mut locked = app.lock().unwrap();
+                    if locked.handle_key(&key) {
+                        break 'outer;
+                    }
+                    if locked.refresh_requested {
+                        break; // 내부 루프 탈출 → 외부 루프에서 refresh 처리
                     }
                 }
             }

@@ -66,15 +66,15 @@ fn collect_entries(node: &BookmarkNode, folder_path: &str, entries: &mut Vec<Boo
         format!("{}/{}", folder_path, node.name)
     };
 
-    if node.node_type == "url" {
-        if let Some(url) = &node.url {
-            entries.push(BookmarkEntry {
-                folder: folder_path.to_string(),
-                name: node.name.clone(),
-                url: url.clone(),
-                is_empty_folder: false,
-            });
-        }
+    if node.node_type == "url"
+        && let Some(url) = &node.url
+    {
+        entries.push(BookmarkEntry {
+            folder: folder_path.to_string(),
+            name: node.name.clone(),
+            url: url.clone(),
+            is_empty_folder: false,
+        });
     }
 
     if let Some(children) = &node.children {
@@ -317,53 +317,36 @@ fn touch_date_modified(node: &mut serde_json::Value) {
 }
 
 /// JSON 값에 checksum을 업데이트하고 파일에 저장
+/// sync_metadata는 보존하여 Chrome 동기화 상태를 유지한다.
+/// 단, Chrome sync가 활성화된 경우 서버에서 원복될 수 있으므로
+/// HTML 내보내기 파일을 Chrome에서 import하는 것을 권장한다.
 fn save_bookmarks(path: &PathBuf, value: &mut serde_json::Value) -> io::Result<()> {
     if let Some(roots) = value.get("roots") {
         let checksum = compute_checksum(roots);
         value["checksum"] = serde_json::Value::String(checksum);
     }
-    // Chrome이 sync_metadata 기준으로 북마크를 복원하지 않도록 제거
-    if let Some(obj) = value.as_object_mut() {
-        obj.remove("sync_metadata");
-    }
     let output = serde_json::to_string_pretty(value)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    std::fs::write(path, &output)?;
     // AccountBookmarks와 Bookmarks 양쪽에 동일 내용 저장
     if let Some(parent) = path.parent() {
+        let account_path = parent.join("AccountBookmarks");
+        let bookmarks_path = parent.join("Bookmarks");
+        std::fs::write(path, &output)?;
         let file_name = path.file_name().unwrap_or_default().to_string_lossy();
-        let counterpart = if file_name == "AccountBookmarks" {
-            Some(parent.join("Bookmarks"))
+        if file_name == "AccountBookmarks" {
+            let _ = std::fs::write(&bookmarks_path, &output);
         } else if file_name == "Bookmarks" {
-            Some(parent.join("AccountBookmarks"))
-        } else {
-            None
-        };
-        if let Some(other) = counterpart {
-            let _ = std::fs::write(&other, &output);
+            let _ = std::fs::write(&account_path, &output);
         }
-    }
-    // Chrome이 .bak에서 복원하지 않도록 삭제
-    if let Some(parent) = path.parent() {
+        // .bak 파일 삭제
         for name in &["Bookmarks.bak", "AccountBookmarks.bak"] {
             let bak = parent.join(name);
             if bak.exists() {
                 let _ = std::fs::remove_file(&bak);
             }
         }
-    }
-    // Chrome이 동기화 데이터 기준으로 북마크를 복원하지 않도록 삭제
-    if let Some(profile_dir) = path.parent() {
-        // Sync Data 디렉토리 전체 삭제
-        let sync_data = profile_dir.join("Sync Data");
-        if sync_data.is_dir() {
-            let _ = std::fs::remove_dir_all(&sync_data);
-        }
-        // Sync Data Backup 디렉토리도 삭제
-        let sync_backup = profile_dir.join("Sync Data Backup");
-        if sync_backup.is_dir() {
-            let _ = std::fs::remove_dir_all(&sync_backup);
-        }
+    } else {
+        std::fs::write(path, &output)?;
     }
     Ok(())
 }
@@ -431,11 +414,11 @@ pub fn update_bookmarks_file(
 
     if let Some(roots) = value.get_mut("roots") {
         for key in &["bookmark_bar", "other", "synced"] {
-            if let Some(root) = roots.get_mut(*key) {
-                if update_node_and_touch_parent(root, original_url, new_name, new_url) {
-                    touch_date_modified(root);
-                    break;
-                }
+            if let Some(root) = roots.get_mut(*key)
+                && update_node_and_touch_parent(root, original_url, new_name, new_url)
+            {
+                touch_date_modified(root);
+                break;
             }
         }
     }
@@ -471,11 +454,11 @@ pub fn delete_bookmark_from_file(path: &PathBuf, target_url: &str) -> io::Result
 
     if let Some(roots) = value.get_mut("roots") {
         for key in &["bookmark_bar", "other", "synced"] {
-            if let Some(root) = roots.get_mut(*key) {
-                if remove_node(root, target_url) {
-                    touch_date_modified(root);
-                    break;
-                }
+            if let Some(root) = roots.get_mut(*key)
+                && remove_node(root, target_url)
+            {
+                touch_date_modified(root);
+                break;
             }
         }
     }
