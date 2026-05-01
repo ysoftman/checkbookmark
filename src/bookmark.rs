@@ -315,7 +315,8 @@ fn compute_checksum(roots: &serde_json::Value) -> String {
             hash_node(&mut hasher, root);
         }
     }
-    format!("{:x}", hasher.finalize())
+    let digest = hasher.finalize();
+    digest.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 /// 현재 시간을 Chrome 타임스탬프(1601-01-01 기준 마이크로초)로 변환
