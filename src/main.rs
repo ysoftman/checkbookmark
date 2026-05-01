@@ -48,14 +48,14 @@ async fn main() {
     let bookmark_files: Vec<(String, PathBuf)> = if let Some(file) = cli.file {
         vec![("custom".to_string(), file)]
     } else {
-        let profiles = discover_profiles();
+        let mut profiles = discover_profiles();
         if profiles.is_empty() {
             eprintln!("ERROR: No Chrome profiles found");
             std::process::exit(1);
         }
 
         // TUI 프로필 선택
-        match run_profile_selector(&profiles) {
+        match run_profile_selector(&mut profiles) {
             Ok(Some(idx)) => {
                 let p = &profiles[idx];
                 vec![(p.display_name.clone(), p.bookmarks_path.clone())]

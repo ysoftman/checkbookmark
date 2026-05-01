@@ -58,6 +58,27 @@ pub struct ProfileInfo {
     pub bookmarks_path: PathBuf,
 }
 
+/// 프로필 이름을 Preferences(profile.name)에 저장하고 메모리 값도 갱신
+pub fn rename_profile(profile: &mut ProfileInfo, new_name: &str) -> io::Result<()> {
+    let profile_dir = profile
+        .bookmarks_path
+        .parent()
+        .ok_or_else(|| io::Error::other("Invalid profile path"))?;
+    let preferences_path = profile_dir.join("Preferences");
+    let content = std::fs::read_to_string(&preferences_path)?;
+    let mut value: serde_json::Value = serde_json::from_str(&content).map_err(io::Error::other)?;
+
+    if !value["profile"].is_object() {
+        value["profile"] = serde_json::json!({});
+    }
+    value["profile"]["name"] = serde_json::Value::String(new_name.to_string());
+
+    let updated = serde_json::to_string_pretty(&value).map_err(io::Error::other)?;
+    std::fs::write(preferences_path, updated)?;
+    profile.display_name = new_name.to_string();
+    Ok(())
+}
+
 /// 북마크 노드를 재귀적으로 탐색하여 URL 항목과 빈 폴더를 수집
 fn collect_entries(node: &BookmarkNode, folder_path: &str, entries: &mut Vec<BookmarkEntry>) {
     let current_path = if folder_path.is_empty() {

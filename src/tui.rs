@@ -736,7 +736,7 @@ fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
 }
 
 /// TUI 프로필 선택 화면
-pub fn run_profile_selector(profiles: &[ProfileInfo]) -> io::Result<Option<usize>> {
+pub fn run_profile_selector(profiles: &mut [ProfileInfo]) -> io::Result<Option<usize>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -744,6 +744,9 @@ pub fn run_profile_selector(profiles: &[ProfileInfo]) -> io::Result<Option<usize
     let mut terminal = Terminal::new(backend)?;
 
     let mut selected: usize = 0;
+    let mut rename_mode = false;
+    let mut rename_input = String::new();
+    let mut rename_error: Option<String> = None;
     let result = loop {
         terminal.draw(|f| {
             let area = f.area();
@@ -801,17 +804,83 @@ pub fn run_profile_selector(profiles: &[ProfileInfo]) -> io::Result<Option<usize
 
             f.render_widget(table, chunks[0]);
 
-            let help = Paragraph::new(Line::from(styled_hint(
-                " [↑/↓/j/k] Navigate  [Enter] Select  [q] Quit",
-            )))
-            .block(Block::default().borders(Borders::ALL));
+            let help_text = if rename_mode {
+                " [Enter] Save  [Esc] Cancel"
+            } else {
+                " [↑/↓/j/k] Navigate  [Enter] Select  [r] Rename  [q] Quit"
+            };
+            let help = Paragraph::new(Line::from(styled_hint(help_text)))
+                .block(Block::default().borders(Borders::ALL));
             f.render_widget(help, chunks[1]);
+
+            if rename_mode {
+                let popup = centered_rect(60, 7, area);
+                f.render_widget(Clear, popup);
+                let block = Block::default()
+                    .title(" Rename Profile ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow));
+                let inner = block.inner(popup);
+                f.render_widget(block, popup);
+
+                let lines = vec![
+                    Line::from("New profile name:"),
+                    Line::from(rename_input.as_str()),
+                    Line::from(""),
+                    Line::from(
+                        rename_error
+                            .as_deref()
+                            .map(|m| Span::styled(m, Style::default().fg(Color::LightRed)))
+                            .unwrap_or_else(|| Span::raw("")),
+                    ),
+                ];
+                let p = Paragraph::new(lines);
+                f.render_widget(p, inner);
+                f.set_cursor_position(Position::new(
+                    inner.x + rename_input.width() as u16,
+                    inner.y + 1,
+                ));
+            }
         })?;
 
         if event::poll(Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
         {
             if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            if rename_mode {
+                match key.code {
+                    KeyCode::Esc => {
+                        rename_mode = false;
+                        rename_error = None;
+                    }
+                    KeyCode::Enter => {
+                        let trimmed = rename_input.trim();
+                        if trimmed.is_empty() {
+                            rename_error = Some("Name cannot be empty".to_string());
+                        } else {
+                            match rename_profile(&mut profiles[selected], trimmed) {
+                                Ok(()) => {
+                                    rename_mode = false;
+                                    rename_error = None;
+                                }
+                                Err(e) => {
+                                    rename_error = Some(format!("Save failed: {e}"));
+                                }
+                            }
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        rename_input.pop();
+                    }
+                    KeyCode::Char(c)
+                        if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+                    {
+                        rename_input.push(c);
+                    }
+                    _ => {}
+                }
                 continue;
             }
             match key.code {
@@ -821,6 +890,11 @@ pub fn run_profile_selector(profiles: &[ProfileInfo]) -> io::Result<Option<usize
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     selected = (selected + 1).min(profiles.len() - 1);
+                }
+                KeyCode::Char('r') => {
+                    rename_mode = true;
+                    rename_input = profiles[selected].display_name.clone();
+                    rename_error = None;
                 }
                 KeyCode::Enter => break Some(selected),
                 _ => {}
