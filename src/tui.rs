@@ -32,7 +32,9 @@ pub struct App {
     pub concurrency: usize,
     pub timeout: u64,
     pub search_mode: bool,
+    pub command_mode: bool,
     pub search_query: String,
+    pub command_input: String,
     pub refresh_requested: bool,
     pub pending_d: bool,
     pub confirm_delete: bool,
@@ -47,8 +49,15 @@ pub struct App {
     pub edit_original_url: String,
     pub edit_original_folder: String,
     pub selected_urls: HashSet<String>,
+    pub pending_delete_targets: Vec<DeleteTarget>,
     pub chrome_warning: bool,
     pub popup_message: Option<String>,
+}
+
+#[derive(Clone)]
+pub enum DeleteTarget {
+    Url(String),
+    EmptyFolder { folder: String, name: String },
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -92,7 +101,9 @@ impl App {
             concurrency,
             timeout,
             search_mode: false,
+            command_mode: false,
             search_query: String::new(),
+            command_input: String::new(),
             refresh_requested: false,
             pending_d: false,
             confirm_delete: false,
@@ -107,6 +118,7 @@ impl App {
             edit_original_url: String::new(),
             edit_original_folder: String::new(),
             selected_urls: HashSet::new(),
+            pending_delete_targets: Vec::new(),
             chrome_warning: false,
             popup_message: None,
         }
@@ -254,6 +266,9 @@ impl App {
         if self.search_mode {
             return self.handle_search_key(key);
         }
+        if self.command_mode {
+            return self.handle_command_key(key);
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
         // dd 시퀀스 처리
@@ -295,6 +310,10 @@ impl App {
             KeyCode::Char('V') => self.toggle_select_all(),
             KeyCode::Char('o') => self.open_selected_url(),
             KeyCode::Char('e') => self.enter_edit_mode(),
+            KeyCode::Char(':') => {
+                self.command_mode = true;
+                self.command_input.clear();
+            }
             KeyCode::Char('/') => {
                 self.search_mode = true;
                 self.search_query.clear();
@@ -329,6 +348,34 @@ impl App {
         false
     }
 
+    fn handle_command_key(&mut self, key: &crossterm::event::KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc => {
+                self.command_mode = false;
+                self.command_input.clear();
+            }
+            KeyCode::Enter => {
+                let cmd = std::mem::take(&mut self.command_input);
+                self.command_mode = false;
+                match cmd.trim() {
+                    "w" => self.save_pending_deletes(),
+                    "" => {}
+                    other => {
+                        self.popup_message = Some(format!("Unknown command: :{other}"));
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                self.command_input.pop();
+            }
+            KeyCode::Char(c) => {
+                self.command_input.push(c);
+            }
+            _ => {}
+        }
+        false
+    }
+
     fn edit_buf(&self) -> &str {
         match self.edit_field {
             EditField::Folder => &self.edit_folder,
@@ -355,9 +402,13 @@ impl App {
     }
 
     fn handle_edit_key(&mut self, key: &crossterm::event::KeyEvent) -> bool {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => {
                 self.edit_mode = false;
+            }
+            KeyCode::Char('s') if ctrl => {
+                self.save_edit();
             }
             KeyCode::Tab => {
                 self.edit_field = match self.edit_field {
@@ -473,8 +524,7 @@ impl App {
         if original_folder != new_folder {
             let _ = move_bookmark_to_folder(&self.bookmarks_path, &new_url, &new_folder);
         }
-
-        self.export_html_popup();
+        self.popup_message = Some("Bookmark saved.".to_string());
     }
 
     fn toggle_select(&mut self) {
@@ -543,13 +593,13 @@ impl App {
         if !self.selected_urls.is_empty() {
             let urls: Vec<String> = self.selected_urls.drain().collect();
             for url in &urls {
-                self.delete_single_entry(url);
+                self.stage_delete(url);
             }
             let url_set: HashSet<&String> = urls.iter().collect();
             self.results.retain(|r| !url_set.contains(&r.url));
             self.total = self.total.saturating_sub(urls.len());
         } else {
-            self.delete_single_entry(&target);
+            self.stage_delete(&target);
             self.results.retain(|r| r.url != target);
             self.total = self.total.saturating_sub(1);
         }
@@ -562,28 +612,56 @@ impl App {
         } else {
             self.table_state.select(None);
         }
-
-        self.export_html_popup();
     }
 
-    fn delete_single_entry(&self, url: &str) {
+    fn stage_delete(&mut self, url: &str) {
         if url.starts_with("folder://") {
             // 빈 폴더 삭제: url = "folder://parent/folder_name"
             if let Some(r) = self.results.iter().find(|r| r.url == url) {
-                let _ = delete_empty_folder_from_file(&self.bookmarks_path, &r.folder, &r.name);
+                self.pending_delete_targets.push(DeleteTarget::EmptyFolder {
+                    folder: r.folder.clone(),
+                    name: r.name.clone(),
+                });
             }
         } else {
-            let _ = delete_bookmark_from_file(&self.bookmarks_path, url);
+            self.pending_delete_targets
+                .push(DeleteTarget::Url(url.to_string()));
         }
     }
 
-    fn export_html_popup(&mut self) {
+    fn save_pending_deletes(&mut self) {
+        if self.pending_delete_targets.is_empty() {
+            self.popup_message = Some("No pending deletions.".to_string());
+            return;
+        }
+
+        let mut saved = 0usize;
+        for target in &self.pending_delete_targets {
+            match target {
+                DeleteTarget::Url(url) => {
+                    if delete_bookmark_from_file(&self.bookmarks_path, url).is_ok() {
+                        saved += 1;
+                    }
+                }
+                DeleteTarget::EmptyFolder { folder, name } => {
+                    if delete_empty_folder_from_file(&self.bookmarks_path, folder, name).is_ok() {
+                        saved += 1;
+                    }
+                }
+            }
+        }
+        self.pending_delete_targets.clear();
+
         match export_bookmarks_html(&self.bookmarks_path) {
             Ok(path) => {
-                self.popup_message = Some(format!("Bookmark file exported: {}", path.display()));
+                self.popup_message = Some(format!(
+                    "Saved {saved} deletion(s). Bookmark file exported: {}",
+                    path.display()
+                ));
             }
             Err(e) => {
-                self.popup_message = Some(format!("Export failed: {e}"));
+                self.popup_message =
+                    Some(format!("Saved {saved} deletion(s), but export failed: {e}"));
             }
         }
     }
@@ -601,8 +679,11 @@ impl App {
         self.sort_ascending = true;
         self.search_query.clear();
         self.search_mode = false;
+        self.command_mode = false;
+        self.command_input.clear();
         self.refresh_requested = false;
         self.selected_urls.clear();
+        self.pending_delete_targets.clear();
         self.table_state.select(Some(0));
     }
 
@@ -991,7 +1072,8 @@ fn render_app(f: &mut Frame, app: &mut App) {
             );
         f.render_widget(url_input, edit_chunks[2]);
 
-        let hint_spans = styled_hint(" [Tab] Switch field  [Enter] Save  [Esc] Cancel  ");
+        let hint_spans =
+            styled_hint(" [Tab] Switch field  [Enter] Save & Close  [Ctrl+S] Save  [Esc] Cancel  ");
         let hint = Paragraph::new(Line::from(hint_spans)).block(
             Block::default()
                 .borders(Borders::ALL)
@@ -1085,7 +1167,7 @@ fn render_app(f: &mut Frame, app: &mut App) {
 
     // 팝업 메시지
     if let Some(msg) = &app.popup_message {
-        let popup_area = centered_rect(55, 5, area);
+        let popup_area = centered_rect(55, 6, area);
         let clear_area = Rect::new(
             popup_area.x.saturating_sub(1),
             popup_area.y,
@@ -1096,7 +1178,7 @@ fn render_app(f: &mut Frame, app: &mut App) {
 
         let msg_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Length(2)])
+            .constraints([Constraint::Length(3), Constraint::Length(3)])
             .split(popup_area);
 
         let text = Paragraph::new(format!(" {msg}"))
@@ -1121,7 +1203,7 @@ fn render_app(f: &mut Frame, app: &mut App) {
         f.render_widget(hint, msg_chunks[1]);
     }
 
-    // 하단: 검색 모드 또는 도움말
+    // 하단: 검색 모드, 명령 모드 또는 도움말
     if app.search_mode {
         let filtered_count = app.sorted_results().len();
         let match_info = if app.search_query.is_empty() {
@@ -1131,6 +1213,16 @@ fn render_app(f: &mut Frame, app: &mut App) {
         };
         let search_text = format!(" /{}{}", app.search_query, match_info);
         let help = Paragraph::new(search_text)
+            .style(Style::default().fg(Color::Yellow))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow)),
+            );
+        f.render_widget(help, chunks[2]);
+    } else if app.command_mode {
+        let command_text = format!(" :{}", app.command_input);
+        let help = Paragraph::new(command_text)
             .style(Style::default().fg(Color::Yellow))
             .block(
                 Block::default()
@@ -1154,7 +1246,7 @@ fn render_app(f: &mut Frame, app: &mut App) {
             String::new()
         };
         let help_text = format!(
-            " [↑/↓/j/k] Navigate  [Space] Select  [V] Select All  [dd] Delete  [s/f/n/u] Sort  [o] Open  [e] Edit  [/] Filter  [r] Refresh  [q] Quit{select_info}{search_info}"
+            " [↑/↓/j/k] Navigate  [Ctrl+u/d] Page  [Space] Select  [V] Select All  [dd] Delete  [:w] Save  [s/f/n/u] Sort  [o] Open  [e] Edit  [/] Filter  [r] Refresh  [q] Quit{select_info}{search_info}"
         );
         let help = Paragraph::new(Line::from(styled_hint(&help_text)))
             .block(Block::default().borders(Borders::ALL));
