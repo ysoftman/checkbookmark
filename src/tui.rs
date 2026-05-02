@@ -773,6 +773,7 @@ pub fn run_profile_selector(profiles: &mut [ProfileInfo]) -> io::Result<Option<u
                         Cell::from(format!("{}", i + 1)),
                         Cell::from(p.display_name.as_str()),
                         Cell::from(p.dir_name.as_str()),
+                        Cell::from(p.bookmarks_path.display().to_string()),
                     ])
                     .style(style)
                 })
@@ -782,12 +783,13 @@ pub fn run_profile_selector(profiles: &mut [ProfileInfo]) -> io::Result<Option<u
                 items,
                 [
                     Constraint::Length(4),
-                    Constraint::Percentage(50),
-                    Constraint::Percentage(50),
+                    Constraint::Percentage(24),
+                    Constraint::Percentage(16),
+                    Constraint::Percentage(60),
                 ],
             )
             .header(
-                Row::new(vec!["#", "Profile", "Directory"])
+                Row::new(vec!["#", "Profile", "Directory", "Path"])
                     .style(Style::default().add_modifier(Modifier::BOLD))
                     .bottom_margin(0),
             )
